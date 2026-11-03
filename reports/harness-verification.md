@@ -20,3 +20,12 @@
 최초 구현 후 lint가 `Callable` import 문제를 검출해 수정하고 전체 검증을 재실행했다. 실패 주입은 원본 프로젝트에 영향을 주지 않았다. 관련 명세와 README를 업데이트했다. `harness-verify`는 로컬 실패 시 `HARNESS_NOT_READY`를 출력하고 로컬 성공 시 외부 확인 대기로 표시한다. CLI·GitHub 검사는 별도이며 이 명령으로 `HARNESS_READY`를 자동 주장하지 않는다.
 
 남은 BLOCKED 항목을 모두 실행해 결과를 기록한 뒤에만 최종 판정을 내릴 수 있다. 실패가 확인되면 `HARNESS_NOT_READY`, 모든 필수 항목이 PASS인 경우에만 `HARNESS_READY`다. v0.1 기능 구현은 아직 시작하지 않는다.
+
+
+## GitHub Ruleset 검증 갱신 — 2026-11-04
+
+- 저장소: https://github.com/CodingBot000/RCA_Agent; 기본 브랜치 `main`. 아래 결과는 이전 표의 GitHub 관련 BLOCKED 기록을 대체한다. CLI 인증 검증의 BLOCKED 상태는 그대로다.
+- **PASS — 설정:** [main-ci-protection](https://github.com/CodingBot000/RCA_Agent/rules/26465287) (ID `26465287`)는 Active이며 기본 브랜치에 적용된다. PR 필수, 승인 0, GitHub Actions 앱(15368)의 `harness-verification` 필수, 최신 브랜치 요구 없음, 강제 푸시 및 삭제 금지, bypass 없음. GitHub가 기본 설정한 미기여 변경 추가 승인 옵션은 검증 후 비활성화했다.
+- **PASS — 정상 CI:** 기존 [main 실행](https://github.com/CodingBot000/RCA_Agent/actions/runs/41661176656)은 성공. Ruleset 적용 후 임시 PR #2의 [성공 실행](https://github.com/CodingBot000/RCA_Agent/actions/runs/41673064529)도 성공했고 PR 상태는 `CLEAN`, `MERGEABLE`이었다.
+- **PASS — 실패 및 차단:** 임시 PR #2에서 의도적인 실패를 포함한 [실행](https://github.com/CodingBot000/RCA_Agent/actions/runs/41673155644)이 실패했고 GitHub GraphQL의 `mergeStateStatus`는 `BLOCKED`였다. 병합 API 호출은 하지 않았다. `mergeable`은 충돌 여부를 나타내므로 `MERGEABLE`이었다. 테스트 후 PR은 병합 없이 종료하고 원격 브랜치를 삭제했다. `main` 커밋은 `4aa5caf` 그대로다.
+- **남은 확인:** 강제 푸시·삭제 제한은 설정 및 적용 API로 확인했으며 실제 파괴적 시도는 하지 않았다. Codex/Claude CLI 지침 인식은 기존과 같이 BLOCKED이므로 전체 `HARNESS_READY`는 보류한다.

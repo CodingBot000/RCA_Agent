@@ -35,3 +35,17 @@ rcaeval-agent evaluate --tasks agent_tasks/re2-ob --predictions preds.jsonl
 참고: [Codex AGENTS.md](https://developers.openai.com/codex/guides/agents-md/), [Claude Code 메모리](https://code.claude.com/docs/en/memory), [Claude Code 스킬](https://code.claude.com/docs/en/skills), [RCAEval 에이전트 가이드](https://github.com/phamquiluan/RCAEval/blob/main/docs/AGENTS.md).
 
 `make harness-verify`는 지침 가져오기·순서와 모든 로컬 검사를 확인한다. 에이전트 CLI 실제 인식과 GitHub 원격 실행은 별도 확인이며, 로컬 명령 성공만으로 전체 준비 완료를 뜻하지 않는다. 상세 기준과 판정은 `docs/self-verification/` 및 `reports/harness-verification.md`를 참고한다.
+
+## Phase 1: RE2-OB 데이터 준비
+
+`manifests/re2-ob-20.json`의 고정 리비전과 seed 42를 이용한다. 아래 두 명령은 평가자만 실행한다. 첫 명령은 명시적인 네트워크 다운로드로 인덱스와 선택한 20개 사례의 telemetry를 받는다. 기존 대상이 있으면 덮어쓰지 않는다. 용량과 데이터 보관·삭제는 실행자 책임이다.
+
+```sh
+uv sync --locked --extra phase1
+uv run --locked --extra phase1 python -m rca_agent.phase1 download phase1-data/re2-ob-20
+uv run --locked --extra phase1 python -m rca_agent.phase1 export phase1-data/re2-ob-20/private/raw phase1-data/blind
+```
+
+`phase1-data/`는 Git 제외 대상이다. `private/mapping.json`, 인덱스와 원본은 정답을 포함하므로 에이전트가 접근할 수 없게 별도로 보관한다. `blind`에는 익명 케이스 디렉터리와 기존 `RCAInput` 형태의 `task.json`이 있다. 각 케이스의 Parquet 파일을 pyarrow로 읽을 수 있다. 이는 RCAEval 공식 agent export 및 채점기와 호환됨을 아직 검증하지 않은 자체 형식이다. 경로 또는 이름 변경은 보안 경계가 아니다.
+
+실제 에이전트를 실행하기 전에는 별도의 컨테이너/OS 권한 경계가 필수다. 예를 들어 신뢰할 수 있는 로컬 이미지에 blind 디렉터리만 `--mount type=bind,src=<blind 절대경로>,dst=/task,readonly`로 마운트하고 `--network none --read-only --cap-drop ALL --security-opt no-new-privileges`를 적용한다. 원본·정답·manifest·부모 디렉터리·환경 변수 및 Docker 소켓은 제공하지 않는다. 실행 환경에서 실제 접근 거부를 직접 확인한다. 공개 인덱스와 선택 규칙을 결합하면 답을 유추할 수 있으므로 네트워크 차단도 중요하다. 출력은 비밀 누출을 완전히 방지하거나 의미적 추론을 검증하지 못한다.

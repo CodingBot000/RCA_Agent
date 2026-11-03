@@ -162,6 +162,26 @@ def load_task(case: Path) -> RCAInput:
     return RCAInput.parse(json.loads((case / "task.json").read_text(encoding="utf-8")))
 
 
+def validate_blind(root: Path) -> None:
+    """Reject unexpected files before giving this directory to a container."""
+    if root.is_symlink() or not root.is_dir():
+        raise ContractError("blind directory must be a real directory")
+    expected = {f"re2-ob-{n:04d}" for n in range(1, 21)}
+    if {p.name for p in root.iterdir()} != expected:
+        raise ContractError("expected exactly 20 blind cases")
+    for case_id in sorted(expected):
+        case = root / case_id
+        if case.is_symlink() or not case.is_dir():
+            raise ContractError("invalid case directory")
+        entries = list(case.iterdir())
+        if {p.name for p in entries} != {*FILES, "task.json"}:
+            raise ContractError("unexpected blind file")
+        if any(p.is_symlink() or not p.is_file() for p in entries):
+            raise ContractError("invalid blind file")
+        if load_task(case).case_id != case_id:
+            raise ContractError("case ID mismatch")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -172,11 +192,15 @@ def main() -> None:
     export = sub.add_parser("export", help="copy prepared cases to a blind directory")
     export.add_argument("raw", type=Path)
     export.add_argument("output", type=Path)
+    check = sub.add_parser("validate", help="validate a blind tree before mounting")
+    check.add_argument("blind", type=Path)
     args = parser.parse_args()
     if args.command == "download":
         prepare(args.destination)
-    else:
+    elif args.command == "export":
         export_blind(args.raw, args.output)
+    else:
+        validate_blind(args.blind)
 
 
 if __name__ == "__main__":

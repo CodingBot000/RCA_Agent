@@ -110,3 +110,14 @@ def test_explicit_download_only_selected_twenty(tmp_path, monkeypatch):
     assert (dest / "private" / "cases.parquet").is_file()
     with pytest.raises(FileExistsError):
         phase1.prepare(dest)
+
+
+def test_validate_blind_rejects_answer_files(raw_cases, tmp_path):
+    from rca_agent.phase1 import validate_blind
+
+    out = tmp_path / "blind"
+    export_blind(raw_cases, out)
+    validate_blind(out)
+    (out / "re2-ob-0001" / "mapping.json").write_text("secret")
+    with pytest.raises(ContractError):
+        validate_blind(out)

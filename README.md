@@ -49,3 +49,5 @@ uv run --locked --extra phase1 python -m rca_agent.phase1 export phase1-data/re2
 `phase1-data/`는 Git 제외 대상이다. `private/mapping.json`, 인덱스와 원본은 정답을 포함하므로 에이전트가 접근할 수 없게 별도로 보관한다. `blind`에는 익명 케이스 디렉터리와 기존 `RCAInput` 형태의 `task.json`이 있다. 각 케이스의 Parquet 파일을 pyarrow로 읽을 수 있다. 이는 RCAEval 공식 agent export 및 채점기와 호환됨을 아직 검증하지 않은 자체 형식이다. 경로 또는 이름 변경은 보안 경계가 아니다.
 
 실제 에이전트를 실행하기 전에는 별도의 컨테이너/OS 권한 경계가 필수다. 예를 들어 신뢰할 수 있는 로컬 이미지에 blind 디렉터리만 `--mount type=bind,src=<blind 절대경로>,dst=/task,readonly`로 마운트하고 `--network none --read-only --cap-drop ALL --security-opt no-new-privileges`를 적용한다. 원본·정답·manifest·부모 디렉터리·환경 변수 및 Docker 소켓은 제공하지 않는다. 실행 환경에서 실제 접근 거부를 직접 확인한다. 공개 인덱스와 선택 규칙을 결합하면 답을 유추할 수 있으므로 네트워크 차단도 중요하다. 출력은 비밀 누출을 완전히 방지하거나 의미적 추론을 검증하지 못한다.
+
+재현 가능한 격리 실행은 신뢰할 수 있는 로컬 이미지를 사용해 `scripts/run_blind_container.sh phase1-data/blind <local-image> <command> [args...]`로 시작한다. 실행기는 익명 케이스 구성만 검사하고, blind 디렉터리 외의 호스트 경로·환경 변수·네트워크를 명시적으로 전달하지 않는다. Docker 런타임과 이미지 자체의 신뢰성 및 telemetry에 포함된 의미적 단서는 별도로 검토해야 한다.

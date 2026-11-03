@@ -25,3 +25,6 @@ agent_tasks/
 *.answers.jsonl
 preds.jsonl
 reports/logs/
+
+# Phase 1 raw telemetry, answers, private manifests and blind exports
+phase1-data/

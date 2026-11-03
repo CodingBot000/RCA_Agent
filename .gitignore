@@ -1,0 +1,27 @@
+# Python environments, caches and build artifacts
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Environment variables and local secrets
+.env
+.env.*
+
+# Local operating system files
+.DS_Store
+
+# Evaluation data and local verification logs
+data/
+agent_tasks/
+*.answers.jsonl
+preds.jsonl
+reports/logs/

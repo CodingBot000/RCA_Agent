@@ -8,7 +8,11 @@ fi
 blind_dir=$1
 image=$2
 shift 2
-uv run --locked --no-sync python -m rca_agent.phase1 validate "$blind_dir"
+if [ -f "$blind_dir/manifest.json" ]; then
+    uv run --locked --no-sync python -m rca_agent.rcaeval_compat validate --blind "$blind_dir"
+else
+    uv run --locked --no-sync python -m rca_agent.phase1 validate "$blind_dir"
+fi
 blind_dir=$(cd "$blind_dir" && pwd -P)
 exec docker run --rm --pull=never --network none --read-only --cap-drop ALL \
     --security-opt no-new-privileges \

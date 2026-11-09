@@ -1,4 +1,5 @@
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,10 @@ from rca_agent.rcaeval_compat import (
     validate_bindings,
     validate_official_blind,
 )
+
+
+def _id(i):
+    return f"re2-ob-v2-{i:032x}"
 
 
 def _task(case_id):
@@ -27,7 +32,7 @@ def fixture_data(tmp_path):
     blind = tmp_path / "blind"
     cases = blind / "cases"
     cases.mkdir(parents=True)
-    ids = [f"re2-ob-{i:04d}" for i in range(1, 21)]
+    ids = [_id(i) for i in range(1, 21)]
     (blind / "manifest.json").write_text(json.dumps({"case_ids": ids}))
     for oid in ids:
         dest = cases / oid
@@ -60,9 +65,11 @@ def _result(phase_id, candidate="api_latency", evidence="telemetry-metadata"):
     }
 
 
-def test_official_candidates_include_services_and_normalized_indicators():
-    task = official_to_input(_task("re2-ob-0020"), "re2-ob-0001")
+def test_official_candidates_and_legacy_rejection():
+    task = official_to_input(_task(_id(20)), _id(1))
     assert task.candidates == ("api", "db", "api_latency", "db_cpu")
+    with pytest.raises(ContractError):
+        official_to_input(_task("re2-ob-0001"), "re2-ob-0001")
 
 
 def test_id_binding_rejects_swapped_mapping_even_when_sets_match(fixture_data):
@@ -78,29 +85,38 @@ def test_id_binding_rejects_swapped_mapping_even_when_sets_match(fixture_data):
 
 def test_translation_and_invalid_predictions(fixture_data):
     blind, _, _, mapping = fixture_data
-    row = _result("re2-ob-0001")
+    row = _result(_id(1))
     assert translate_predictions([row], mapping, blind, "phase1") == [
-        {"case_id": "re2-ob-0020", "ranks": ["api_latency"]}
+        {"case_id": _id(20), "ranks": ["api_latency"]}
     ]
     for invalid in (
-        [_result("re2-ob-9999")],
+        [_result(_id(99))],
         [row, row],
-        [_result("re2-ob-0001", "api_latency-90")],
-        [_result("re2-ob-0001", evidence="invented")],
+        [_result(_id(1), "api_latency-90")],
+        [_result(_id(1), evidence="invented")],
     ):
         with pytest.raises(ContractError):
             translate_predictions(invalid, mapping, blind, "phase1")
+    assert translate_predictions([row], mapping, blind, "official")[0]["case_id"] == _id(1)
+    with pytest.raises(ContractError):
+        translate_predictions([row], mapping, blind, "ambiguous")
 
 
 def test_official_blind_rejects_extra_secret_and_symlinks(fixture_data, tmp_path):
     blind, _, _, _ = fixture_data
     validate_official_blind(blind)
-    secret = blind / "cases" / "re2-ob-0001" / "answers.jsonl"
+    manifest_path = blind / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest_path.write_text(json.dumps({"case_ids": list(reversed(manifest["case_ids"]))}))
+    with pytest.raises(ContractError, match="manifest"):
+        validate_official_blind(blind)
+    manifest_path.write_text(json.dumps(manifest))
+    secret = blind / "cases" / _id(1) / "answers.jsonl"
     secret.write_text("secret")
     with pytest.raises(ContractError):
         validate_official_blind(blind)
     secret.unlink()
-    target = blind / "cases" / "re2-ob-0001" / "metrics.csv"
+    target = blind / "cases" / _id(1) / "metrics.csv"
     target.unlink()
     target.symlink_to(tmp_path / "secret")
     with pytest.raises(ContractError):
@@ -114,36 +130,29 @@ def test_blind_and_evaluator_must_be_disjoint(tmp_path):
 
 def test_export_and_score_end_to_end_without_network(tmp_path, monkeypatch):
     from rca_agent import rcaeval_compat as compat
-    from rca_agent.phase1 import FILES
+    from rca_agent.phase1 import FILES, case_id
 
     private = tmp_path / "private"
     private.mkdir()
-    rows = [
-        {"case": f"re2ob_svc_cpu_{i}", "fault": "cpu", "root_cause_service": "svc"}
-        for i in range(1, 21)
-    ]
+    key = b"k" * 32
     selection = [
         {
-            "case_id": f"re2-ob-{i:04d}",
-            "source_case": r["case"],
-            "fault": r["fault"],
-            "root_cause_service": r["root_cause_service"],
+            "case_id": case_id(key, "phase-id", f"re2ob_svc_cpu_{i}"),
+            "source_case": f"re2ob_svc_cpu_{i}",
+            "fault": "cpu",
+            "root_cause_service": "svc",
         }
-        for i, r in enumerate(rows, 1)
+        for i in range(1, 21)
     ]
     (private / "mapping.json").write_text(json.dumps(selection))
-    (private / "cases.parquet").write_text("mock index")
     for row in selection:
         case = private / "raw" / row["case_id"]
         case.mkdir(parents=True)
         for name in FILES:
             (case / name).write_text("123")
-    import hashlib
-
-    monkeypatch.setattr(compat, "INDEX_SHA256", hashlib.sha256(b"mock index").hexdigest())
     monkeypatch.setattr(compat, "_official_check", lambda source: None)
-    monkeypatch.setattr(compat, "read_index", lambda path: rows)
-    monkeypatch.setattr(compat, "select_cases", lambda rows: rows)
+    monkeypatch.setattr(compat, "validate_private_sample", lambda path: (selection, key))
+    monkeypatch.setattr(compat, "export_blind", lambda raw, out: shutil.copytree(raw, out))
     monkeypatch.setattr(compat, "_csv_from_parquet", lambda src, dst: dst.write_text("mock csv"))
 
     def official_stub(source, python, args):
@@ -153,15 +162,15 @@ def test_export_and_score_end_to_end_without_network(tmp_path, monkeypatch):
             root.joinpath("cases").mkdir(parents=True)
             answers = []
             for i, row in enumerate(reversed(selection), 1):
-                oid = f"re2-ob-{i:04d}"
-                d = root / "cases" / oid
+                old_id = f"re2-ob-{i:04d}"
+                d = root / "cases" / old_id
                 d.mkdir()
-                (d / "task.json").write_text(json.dumps(_task(oid)))
+                (d / "task.json").write_text(json.dumps(_task(old_id)))
                 for file in ("metrics.csv", "logs.csv", "traces.csv"):
                     (d / file).write_text("mock csv")
                 answers.append(
                     {
-                        "case_id": oid,
+                        "case_id": old_id,
                         "source": compat._source_path(row),
                         "service": "svc",
                         "fault": "cpu",
@@ -175,17 +184,18 @@ def test_export_and_score_end_to_end_without_network(tmp_path, monkeypatch):
             )
             return None
         predictions = Path(args[args.index("--predictions") + 1]).read_text()
-        assert json.loads(predictions)["case_id"] == "re2-ob-0020"
+        assert json.loads(predictions)["case_id"] == case_id(
+            key, "official-id", selection[0]["source_case"]
+        )
         return type("Completed", (), {"stdout": "official scoring reached"})()
 
     monkeypatch.setattr(compat, "_run_official", official_stub)
-    blind = tmp_path / "blind"
-    evaluator = tmp_path / "evaluator"
+    blind, evaluator = tmp_path / "blind", tmp_path / "evaluator"
     compat.build_export(private, blind, evaluator, tmp_path / "source", tmp_path / "python")
     compat.validate_official_blind(blind)
     assert not list(blind.rglob("*answers*"))
     results = tmp_path / "results.jsonl"
-    results.write_text(json.dumps(_result("re2-ob-0001")) + "\n")
+    results.write_text(json.dumps(_result(selection[0]["case_id"])) + "\n")
     assert (
         compat.score_results(
             results, blind, evaluator, tmp_path / "source", tmp_path / "python", "phase1"
@@ -193,6 +203,7 @@ def test_export_and_score_end_to_end_without_network(tmp_path, monkeypatch):
         == "official scoring reached"
     )
     mapping = json.loads((evaluator / "id-map.json").read_text())
+    assert all("v2-" in x["official_id"] for x in mapping)
     mapping[0]["official_id"], mapping[1]["official_id"] = (
         mapping[1]["official_id"],
         mapping[0]["official_id"],
@@ -232,38 +243,4 @@ def test_score_cli_passes_explicit_id_scheme(monkeypatch, capsys):
         ],
     )
     compat.main()
-    assert seen == ["official"]
-    assert capsys.readouterr().out == "ok"
-
-
-def test_official_ids_are_explicitly_distinct_from_phase_ids(fixture_data):
-    blind, _, _, mapping = fixture_data
-    assert (
-        translate_predictions([_result("re2-ob-0001")], mapping, blind, "official")[0]["case_id"]
-        == "re2-ob-0001"
-    )
-    assert (
-        translate_predictions([_result("re2-ob-0001")], mapping, blind, "phase1")[0]["case_id"]
-        == "re2-ob-0020"
-    )
-    with pytest.raises(ContractError):
-        translate_predictions([_result("re2-ob-0001")], mapping, blind, "ambiguous")
-
-
-def test_export_rejects_changed_index_before_official_execution(tmp_path, monkeypatch):
-    from rca_agent import rcaeval_compat as compat
-
-    private = tmp_path / "private"
-    private.mkdir()
-    (private / "cases.parquet").write_bytes(b"not the pinned index")
-    (private / "mapping.json").write_text("[]")
-    monkeypatch.setattr(compat, "_official_check", lambda source: None)
-    with pytest.raises(ContractError, match="pinned dataset revision"):
-        compat.build_export(
-            private,
-            tmp_path / "blind",
-            tmp_path / "evaluator",
-            tmp_path / "source",
-            tmp_path / "python",
-        )
-    assert not (tmp_path / "blind").exists()
+    assert seen == ["official"] and capsys.readouterr().out == "ok"

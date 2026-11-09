@@ -68,3 +68,11 @@
 ## Phase 1 구현 경계
 
 `python -m rca_agent.phase1 download`는 고정 리비전의 인덱스와 선택된 20건의 네 파일만 명시적으로 내려받고, `export`는 익명 폴더에 복사한다. 정확한 사용법은 README에 있다. 출력 `task.json`은 메트릭 열 이름을 후보로, 주입 시각과 자료 존재를 메타데이터 evidence로 변환한 기존 RCAInput 계약이다. 이는 upstream `rcaeval-agent`의 `task.json`이나 정식 채점기 입력과 동일하다는 뜻이 아니며 향후 parity 검증이 필요하다. 파일명 제거 및 복사는 보안 경계가 아니다. 컨테이너 격리 전 에이전트로 실행하지 않는다. 원본 telemetry의 의미적 단서, 공개 데이터 역매칭 및 하드링크·권한·정보 흐름 전반은 보장하지 않는다.
+
+## 공식 RCAEval 상호운용성 수락 기준 (2026-11-08)
+
+평가자는 고정된 공식 RCAEval 소스 버전에서 exporter 및 scorer를 별도로 실행한다. 선택 인덱스와 비공개 매핑을 대조한 후 Parquet를 평가자 전용 임시 원본 구조의 CSV로 변환하고 공식 exporter가 만든 manifest·task·telemetry만 blind 영역으로 옮긴다. 공식 answers 및 기존 Phase 1 ID ↔ 공식 ID ↔ source 매핑은 평가자 전용으로 둔다. 세 ID 집합에 중복·누락·변조가 있으면 중단하며, 번호가 같다는 사실만으로 동일 사례로 간주하지 않는다. 기존 입력 어댑터는 공식 task의 정규화된 service/indicator 후보를 합친다. 예측은 기존 RCAResult 계약과 case별 허용 후보·근거를 통과한 뒤 공식 ID 및 JSONL로 변환한다. 공식 scorer를 명시적으로 실행하고 실패를 그대로 전달한다. 공식 소스 커밋과 Python 환경을 고정·기록하며 네트워크·실제 모델 호출 없이 실행한다.
+
+오프라인 회귀는 정규화·ID 일대일 대응·틀린 ID와 후보·근거 거부·정답 파일 격리·오류 전파를 확인한다. 추가 수동 통합 검증은 실제 20건에서 공식 exporter·toolkit·scorer와 서비스/지표 점수를 비교한다. oracle 기반 fixture는 채점기 정확성 검증일 뿐 RCA 분석 성능이 아니다. CSV 변환은 값 및 행을 보존하도록 검증하되 공식 원본 CSV와의 동등성은 별도로 확인하기 전 주장하지 않는다.
+
+2026-11-08: 위 호환 계층을 구현해 실제 20건에서 공식 exporter·toolkit·scorer와 합성 양성 대조를 검증했다. 기존 Phase 1 독자 형식은 그대로이며 공식 형식은 별도 export다. 평가 상세 및 미검증 범위는 `reports/phase1-compatibility-verification.md` 참조.

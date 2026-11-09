@@ -5,5 +5,27 @@
   "count": 20,
   "seed": 42,
   "algorithm": "fault-balanced-service-greedy-v1",
-  "case_ids": ["re2-ob-0001", "re2-ob-0002", "re2-ob-0003", "re2-ob-0004", "re2-ob-0005", "re2-ob-0006", "re2-ob-0007", "re2-ob-0008", "re2-ob-0009", "re2-ob-0010", "re2-ob-0011", "re2-ob-0012", "re2-ob-0013", "re2-ob-0014", "re2-ob-0015", "re2-ob-0016", "re2-ob-0017", "re2-ob-0018", "re2-ob-0019", "re2-ob-0020"]
+  "case_ids": [
+    "re2-ob-0001",
+    "re2-ob-0002",
+    "re2-ob-0003",
+    "re2-ob-0004",
+    "re2-ob-0005",
+    "re2-ob-0006",
+    "re2-ob-0007",
+    "re2-ob-0008",
+    "re2-ob-0009",
+    "re2-ob-0010",
+    "re2-ob-0011",
+    "re2-ob-0012",
+    "re2-ob-0013",
+    "re2-ob-0014",
+    "re2-ob-0015",
+    "re2-ob-0016",
+    "re2-ob-0017",
+    "re2-ob-0018",
+    "re2-ob-0019",
+    "re2-ob-0020"
+  ],
+  "status": "PUBLIC_LEGACY_NOT_BLIND"
 }

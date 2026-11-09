@@ -93,6 +93,7 @@ phase1 = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "pyarrow" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -106,6 +107,7 @@ provides-extras = ["eval", "phase1"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "pyarrow", specifier = ">=18,<23" },
     { name = "pytest", specifier = ">=8,<10" },
     { name = "ruff", specifier = ">=0.11,<1" },
 ]

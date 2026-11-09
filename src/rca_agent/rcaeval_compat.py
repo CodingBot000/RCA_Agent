@@ -5,7 +5,6 @@ Python environment. This module never invokes a model or downloads data.
 """
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -15,25 +14,11 @@ import tempfile
 from pathlib import Path
 
 from rca_agent.contracts import ContractError, RCAInput, RCAResult, read_jsonl
-from rca_agent.phase1 import FILES, read_index, select_cases
+from rca_agent.phase1 import CASE_ID_PATTERN, export_blind, validate_private_sample
+from rca_agent.phase1 import case_id as private_case_id
 
 OFFICIAL_COMMIT = "90b63a46ac1e969f1fa9015318b51e455c62f8c4"
-INDEX_SHA256 = "c49a288920dbba2e8e724679a14636d5c7eb2b45426bba14007ef79a6c0ab1bb"
-ID_PATTERN = re.compile(r"re2-ob-\d{4}\Z")
-
-
-def validate_mapping(mapping, selected):
-    """Check labels and old IDs against the pinned-index selection, not their order alone."""
-    if len(mapping) != 20 or len(selected) != 20:
-        raise ContractError("expected exactly 20 cases")
-    for i, (actual, expected) in enumerate(zip(mapping, selected, strict=True), 1):
-        if actual != {
-            "case_id": f"re2-ob-{i:04d}",
-            "source_case": expected["case"],
-            "fault": expected["fault"],
-            "root_cause_service": expected["root_cause_service"],
-        }:
-            raise ContractError("private mapping does not match selected index")
+ID_PATTERN = CASE_ID_PATTERN
 
 
 def official_to_input(task, phase_id):
@@ -127,14 +112,7 @@ def build_export(private, blind, evaluator, source, python):
     """Build official blind data, and put ID mapping and labels in evaluator only."""
     _separate(private, blind, evaluator)
     _official_check(source)
-    index = private / "cases.parquet"
-    mapping_file = private / "mapping.json"
-    if private.is_symlink() or index.is_symlink() or mapping_file.is_symlink():
-        raise ContractError("private metadata must not be symlinks")
-    if hashlib.sha256(index.read_bytes()).hexdigest() != INDEX_SHA256:
-        raise ContractError("index does not match the pinned dataset revision")
-    mapping = json.loads(mapping_file.read_text())
-    validate_mapping(mapping, select_cases(read_index(index)))
+    mapping, key = validate_private_sample(private)
     if blind.exists() or blind.is_symlink() or evaluator.exists() or evaluator.is_symlink():
         raise FileExistsError("output already exists")
     evaluator.mkdir(mode=0o700, parents=True)
@@ -142,16 +120,12 @@ def build_export(private, blind, evaluator, source, python):
         stage = Path(temp)
         source_root = stage / "source"
         source_root.mkdir()
+        sanitized = stage / "sanitized"
+        export_blind(private / "raw", sanitized)
         for row in mapping:
-            case = private / "raw" / row["case_id"]
-            if (
-                case.is_symlink()
-                or not case.is_dir()
-                or {p.name for p in case.iterdir()} != set(FILES)
-            ):
-                raise ContractError("invalid raw case")
-            if any((case / f).is_symlink() or not (case / f).is_file() for f in FILES):
-                raise ContractError("invalid raw file")
+            case = sanitized / row["case_id"]
+            if case.is_symlink() or not case.is_dir():
+                raise ContractError("invalid sanitized case")
             dest = source_root / _source_path(row)
             dest.mkdir(parents=True)
             for original, target in (
@@ -188,13 +162,14 @@ def build_export(private, blind, evaluator, source, python):
         ):
             raise ContractError("duplicate or missing source mapping")
         id_map = []
+        official_ids = set()
         for answer in answers:
             row = by_source.get(answer.get("source"))
-            official_id = answer.get("case_id")
+            old_official_id = answer.get("case_id")
             if (
                 row is None
-                or not isinstance(official_id, str)
-                or not ID_PATTERN.fullmatch(official_id)
+                or not isinstance(old_official_id, str)
+                or not re.fullmatch(r"re2-ob-\d{4}", old_official_id)
             ):
                 raise ContractError("unknown official source or ID")
             if (
@@ -202,11 +177,26 @@ def build_export(private, blind, evaluator, source, python):
                 or answer.get("fault") != row["fault"]
             ):
                 raise ContractError("answer differs from private mapping")
-            official_task = json.loads((task_dir / "cases" / official_id / "task.json").read_text())
-            if official_task.get("case_id") != official_id:
+            old_dir = task_dir / "cases" / old_official_id
+            official_task = json.loads((old_dir / "task.json").read_text())
+            if official_task.get("case_id") != old_official_id:
                 raise ContractError("official task ID mismatch")
+            official_id = private_case_id(key, "official-id", row["source_case"])
+            if official_id in official_ids:
+                raise ContractError("duplicate official ID")
+            official_ids.add(official_id)
+            official_task["case_id"] = official_id
+            (old_dir / "task.json").write_text(json.dumps(official_task, indent=2) + "\n")
+            old_dir.rename(task_dir / "cases" / official_id)
+            answer["case_id"] = official_id
             official_to_input(official_task, row["case_id"])
             id_map.append({"phase_id": row["case_id"], "official_id": official_id})
+        # Upstream orders IDs by source paths; sort by opaque keyed IDs instead.
+        answers.sort(key=lambda a: a["case_id"])
+        id_map.sort(key=lambda item: item["official_id"])
+        manifest["case_ids"] = [a["case_id"] for a in answers]
+        (task_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        answers_file.write_text("".join(json.dumps(answer) + "\n" for answer in answers))
         if (
             len({x["official_id"] for x in id_map}) != 20
             or {x["phase_id"] for x in id_map} != {r["case_id"] for r in mapping}
@@ -307,6 +297,7 @@ def validate_official_blind(root):
         len(ids) != 20
         or len(set(ids)) != 20
         or any(not isinstance(x, str) or not ID_PATTERN.fullmatch(x) for x in ids)
+        or ids != sorted(ids)
     ):
         raise ContractError("invalid official manifest IDs")
     if {p.name for p in cases.iterdir()} != set(ids):

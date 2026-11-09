@@ -38,44 +38,44 @@ rcaeval-agent evaluate --tasks agent_tasks/re2-ob --predictions preds.jsonl
 
 ## Phase 1: RE2-OB 데이터 준비
 
-`manifests/re2-ob-20.json`의 고정 리비전과 seed 42를 이용한다. 아래 두 명령은 평가자만 실행한다. 첫 명령은 명시적인 네트워크 다운로드로 인덱스와 선택한 20개 사례의 telemetry를 받는다. 기존 대상이 있으면 덮어쓰지 않는다. 용량과 데이터 보관·삭제는 실행자 책임이다.
+공개된 seed 42 표본은 과거 이력으로만 유지한다. 새 실행은 고정 데이터 리비전과 평가자 전용 임의 256-bit 키를 이용해 공개된 과거 20건을 제외한 새 표본을 만든다. 아래 두 명령은 평가자만 실행한다. 첫 명령은 명시적인 네트워크 다운로드로 인덱스와 선택한 20개 사례의 telemetry를 받는다. 기존 대상이 있으면 덮어쓰지 않는다. 용량과 데이터 보관·삭제는 실행자 책임이다.
 
 ```sh
 uv sync --locked --extra phase1
-uv run --locked --extra phase1 python -m rca_agent.phase1 download phase1-data/re2-ob-20
-uv run --locked --extra phase1 python -m rca_agent.phase1 export phase1-data/re2-ob-20/private/raw phase1-data/blind
+uv run --locked --extra phase1 python -m rca_agent.phase1 download phase1-data/re2-ob-private-v2
+uv run --locked --extra phase1 python -m rca_agent.phase1 export phase1-data/re2-ob-private-v2/private/raw phase1-data/blind-private-v2
 ```
 
-`phase1-data/`는 Git 제외 대상이다. `private/mapping.json`, 인덱스와 원본은 정답을 포함하므로 에이전트가 접근할 수 없게 별도로 보관한다. `blind`에는 익명 케이스 디렉터리와 기존 `RCAInput` 형태의 `task.json`이 있다. 각 케이스의 Parquet 파일을 pyarrow로 읽을 수 있다. 이는 RCAEval 공식 agent export 및 채점기와 호환됨을 아직 검증하지 않은 자체 형식이다. 경로 또는 이름 변경은 보안 경계가 아니다.
+`phase1-data/`는 Git 제외 대상이다. `private/selection.key`, `private/mapping.json`, 인덱스와 원본은 정답을 포함하거나 재구성하므로 에이전트가 접근할 수 없게 별도로 보관한다. `blind`에는 익명 케이스 디렉터리와 기존 `RCAInput` 형태의 `task.json`이 있다. 각 케이스의 Parquet 파일을 pyarrow로 읽을 수 있다. 이는 RCAEval 공식 agent export 및 채점기와 호환됨을 아직 검증하지 않은 자체 형식이다. 경로 또는 이름 변경은 보안 경계가 아니다.
 
-실제 에이전트를 실행하기 전에는 별도의 컨테이너/OS 권한 경계가 필수다. 예를 들어 신뢰할 수 있는 로컬 이미지에 blind 디렉터리만 `--mount type=bind,src=<blind 절대경로>,dst=/task,readonly`로 마운트하고 `--network none --read-only --cap-drop ALL --security-opt no-new-privileges`를 적용한다. 원본·정답·manifest·부모 디렉터리·환경 변수 및 Docker 소켓은 제공하지 않는다. 실행 환경에서 실제 접근 거부를 직접 확인한다. 공개 인덱스와 선택 규칙을 결합하면 답을 유추할 수 있으므로 네트워크 차단도 중요하다. 출력은 비밀 누출을 완전히 방지하거나 의미적 추론을 검증하지 못한다.
+실제 에이전트를 실행하기 전에는 별도의 컨테이너/OS 권한 경계가 필수다. 예를 들어 신뢰할 수 있는 로컬 이미지에 blind 디렉터리만 `--mount type=bind,src=<blind 절대경로>,dst=/task,readonly`로 마운트하고 `--network none --read-only --cap-drop ALL --security-opt no-new-privileges`를 적용한다. 원본·정답·평가자 전용 매핑·과거 공개 표본 manifest·부모 디렉터리·환경 변수 및 Docker 소켓은 제공하지 않는다. 공식 blind export 내부의 익명 manifest는 공식 도구 사용에 필요하다. 실행 환경에서 실제 접근 거부를 직접 확인한다. 공개 인덱스와 선택 규칙을 결합하면 답을 유추할 수 있으므로 네트워크 차단도 중요하다. 출력은 비밀 누출을 완전히 방지하거나 의미적 추론을 검증하지 못한다.
 
-재현 가능한 격리 실행은 신뢰할 수 있는 로컬 이미지를 사용해 `scripts/run_blind_container.sh phase1-data/blind <local-image> <command> [args...]`로 시작한다. 실행기는 익명 케이스 구성만 검사하고, blind 디렉터리 외의 호스트 경로·환경 변수·네트워크를 명시적으로 전달하지 않는다. Docker 런타임과 이미지 자체의 신뢰성 및 telemetry에 포함된 의미적 단서는 별도로 검토해야 한다.
+재현 가능한 격리 실행은 신뢰할 수 있는 로컬 이미지를 사용해 `scripts/run_blind_container.sh phase1-data/blind-private-v2 <local-image> <command> [args...]`로 시작한다. 실행기는 익명 케이스 구성만 검사하고, blind 디렉터리 외의 호스트 경로·환경 변수·네트워크를 명시적으로 전달하지 않는다. Docker 런타임과 이미지 자체의 신뢰성 및 telemetry에 포함된 의미적 단서는 별도로 검토해야 한다.
 
 ## 공식 RCAEval export와 채점기 연결
 
-Phase 1의 기존 `blind` 형식은 그대로 유지한다. 공식 도구와 연결하려면 평가자 측에서 [검증한 RCAEval 소스](https://github.com/phamquiluan/RCAEval/tree/90b63a46ac1e969f1fa9015318b51e455c62f8c4) 커밋 `90b63a46ac1e969f1fa9015318b51e455c62f8c4`을 별도 checkout하고, Python 3.12 환경에 `numpy`, `pandas`, `scikit-learn`, `networkx`, `requests`, `tqdm`을 설치한다. 공식 소스 또는 환경 설치는 수동 작업이다. PyPI RCAEval 1.7.0 휠의 CLI에 의존하지 않는다. 정확한 환경 재현이 필요하면 위 의존성의 버전도 평가 실행 기록에 남겨야 한다.
+Phase 1의 v2 `blind` 형식과 공식 RCAEval 형식은 별도로 내보낸다. 공식 도구와 연결하려면 평가자 측에서 [검증한 RCAEval 소스](https://github.com/phamquiluan/RCAEval/tree/90b63a46ac1e969f1fa9015318b51e455c62f8c4) 커밋 `90b63a46ac1e969f1fa9015318b51e455c62f8c4`을 별도 checkout하고, Python 3.12 환경에 `numpy`, `pandas`, `scikit-learn`, `networkx`, `requests`, `tqdm`을 설치한다. 공식 소스 또는 환경 설치는 수동 작업이다. PyPI RCAEval 1.7.0 휠의 CLI에 의존하지 않는다. 정확한 환경 재현이 필요하면 위 의존성의 버전도 평가 실행 기록에 남겨야 한다.
 
 아래 경로는 예시이며 공식 소스는 수정되지 않은 해당 커밋이어야 한다. 기존 출력은 덮어쓰지 않는다. 실행은 로컬 데이터를 사용하고 LLM을 호출하지 않는다.
 
 ```sh
 uv run --locked --extra phase1 python -m rca_agent.rcaeval_compat export \
-  --private phase1-data/re2-ob-20/private \
-  --blind phase1-data/official-blind --evaluator phase1-data/official-evaluator \
+  --private phase1-data/re2-ob-private-v2/private \
+  --blind phase1-data/official-blind-private-v2 --evaluator phase1-data/official-evaluator-private-v2 \
   --official-source /path/to/RCAEval --official-python /path/to/venv/bin/python
 
 # 에이전트에는 official-blind만 읽기 전용으로 제공한다.
 uv run --locked --extra phase1 python -m rca_agent.rcaeval_compat input \
-  --blind phase1-data/official-blind --case-id re2-ob-0001
+  --blind phase1-data/official-blind-private-v2 --case-id "$CASE_ID"
 
 # 결과는 기존 RCAResult 형식 JSONL. ID 체계를 명시해야 한다.
 uv run --locked --extra phase1 python -m rca_agent.rcaeval_compat score \
-  --blind phase1-data/official-blind --evaluator phase1-data/official-evaluator \
+  --blind phase1-data/official-blind-private-v2 --evaluator phase1-data/official-evaluator-private-v2 \
   --results /path/to/results.jsonl --id-scheme official \
   --official-source /path/to/RCAEval --official-python /path/to/venv/bin/python
 ```
 
-`input`은 공식 task의 서비스 및 정규화된 지표 후보를 합친 `RCAInput`을 반환하며 공식 ID를 사용한다. 이전 Phase 1 ID로 생성된 결과를 채점할 때만 `--id-scheme phase1`을 사용한다. 각 결과의 후보 및 evidence ID는 해당 공식 task에서 만들어진 입력과 대조한다. 현재 입력의 `telemetry-metadata`는 데이터 존재에 대한 구조적 근거일 뿐 특정 원인의 실질적 근거가 아니다. 제출 근거의 의미적 타당성과 RCA 분석은 구현·검증되지 않았다.
+`CASE_ID`는 공식 blind manifest에서 읽은 v2 익명 ID다. 기존 공개 표본의 4자리 ID는 기본 검증과 컨테이너 실행에서 거부된다. `input`은 공식 task의 서비스 및 정규화된 지표 후보를 합친 `RCAInput`을 반환하며 공식 ID를 사용한다. 같은 비공개 v2 표본의 Phase 1 ID로 생성된 결과를 채점할 때만 `--id-scheme phase1`을 사용한다. 각 결과의 후보 및 evidence ID는 해당 공식 task에서 만들어진 입력과 대조한다. 현재 입력의 `telemetry-metadata`는 데이터 존재에 대한 구조적 근거일 뿐 특정 원인의 실질적 근거가 아니다. 제출 근거의 의미적 타당성과 RCA 분석은 구현·검증되지 않았다.
 
 `official-evaluator`의 answers, `selection.json`, ID 매핑과 채점 결과는 정답이 포함된 평가자 전용 자료다. 컨테이너에는 `official-blind` 디렉터리만 전달한다. `scripts/run_blind_container.sh`는 공식 blind 형식도 검증하고 마운트한다. 자동 변환은 raw 로그와 트레이스의 CSV를 포함하지만 원본의 집계 로그·트레이스 시계열(`logts`, `tracets`)은 만들지 않는다. 공식 원본 CSV와 값이 완전히 같다는 뜻도 아니다. 실패한 export는 일부 디렉터리를 남길 수 있으며 별도 출력 경로에서 다시 실행한다.
 
@@ -83,7 +83,7 @@ uv run --locked --extra phase1 python -m rca_agent.rcaeval_compat score \
 
 ```sh
 PYTHONPATH="$PWD/src" /path/to/venv/bin/python scripts/verify_rcaeval_compat.py \
-  --blind phase1-data/official-blind --evaluator phase1-data/official-evaluator \
+  --blind phase1-data/official-blind-private-v2 --evaluator phase1-data/official-evaluator-private-v2 \
   --official-source /path/to/RCAEval --official-python /path/to/venv/bin/python
 ```
 
@@ -91,4 +91,6 @@ PYTHONPATH="$PWD/src" /path/to/venv/bin/python scripts/verify_rcaeval_compat.py 
 
 원본·blind telemetry, 정답과 평가자 전용 매핑, 임시 채점 결과는 Git에 추가하지 않는다. `.gitignore`는 기본 데이터 디렉터리와 자주 쓰는 파일명·확장자를 제외한다. 사용자 지정 경로와 임의의 결과 파일명까지 모두 판별할 수는 없으므로 커밋 전에 `git status --short`와 `git diff --cached --name-only`를 확인한다. 기존에 Git에서 추적된 파일은 `.gitignore`를 추가해도 추적이 자동으로 중단되지 않는다.
 
-공개된 표본 선정 규칙과 공개 인덱스를 결합하면 정답을 재구성할 수 있다. 따라서 이 공개 저장소 자체나 네트워크를 블라인드 평가 에이전트에 제공하지 않는다. 공개 저장소에 이미 기록된 내용을 `.gitignore`로 비공개화할 수는 없다.
+과거 seed 42 표본은 공개 선정 규칙과 인덱스를 결합하면 정답을 재구성할 수 있다. 새 표본도 보존된 telemetry 값을 공개 데이터와 대조하면 역추적될 수 있으므로 공개 저장소나 네트워크를 평가 에이전트에 제공하지 않는다. 이미 공개된 Git 기록을 `.gitignore`로 비공개화할 수는 없다.
+
+선택 키(`selection.key`)는 평가자만 읽을 수 있게 보관한다. 키를 잃으면 동일한 비공개 표본과 ID를 재구성할 수 없다. 별도 키를 지정한다면 암호학적으로 안전하게 생성한 32바이트 키여야 한다. 새 경로로 같은 표본을 다시 다운로드하려면 `download <새-경로> --key <평가자-전용-selection.key>`를 사용한다. 변환은 알려진 시각·UUID·IPv4·이메일·긴 16진수/숫자 패턴 및 trace ID를 가리지만, 모든 민감정보나 원본 telemetry 지문 역매칭을 막지 못한다. 메트릭 수치는 보존되므로 공개 데이터에 접근하거나 사전 지식이 있는 에이전트의 완전한 블라인드는 보장되지 않는다.

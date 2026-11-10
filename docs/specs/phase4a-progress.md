@@ -10,3 +10,4 @@
 - Synthetic 테스트: 관측값 변화에 따른 후보 변경, 미전달 레코드·허위 값·ID만 제시한 가설·변조 응답·크기 초과를 확인했다. 오프라인 `make check` 및 `make harness-verify` 83건 통과. 실제 모델이나 RCA 정확도는 평가하지 않았다.
 - 실데이터 smoke: `scripts/phase4a_smoke.py`를 Python 3.12.13, LangGraph 1.2.20 환경의 macOS `sandbox-exec`에서 실행했다. 네트워크와 파일 쓰기를 거부하고 사용자 디렉터리는 기본적으로 읽기 거부한 뒤 프로젝트 소스·의존성과 v2 blind 경로만 허용했다. 별도 사전 검사에서 비공개 키 읽기, blind 쓰기, 네트워크 연결이 거부됨을 확인했다. 결과: 20건 중 성공 20, 실패 0, 미검증 0. CPU 메트릭 한 건을 조회하는 연결 시험이며 모든 텔레메트리 종류·분석 정확도를 뜻하지 않는다. Ground Truth는 제공하지 않았다.
 - 리뷰 및 남은 위험: 관측 레코드에 실제와 같은 필드·값이 있다는 구조적 확인은 설명의 인과적 타당성을 증명하지 않는다. Reasoner는 신뢰된 in-process 코드다. 공개 원본의 telemetry 지문 역매칭 및 패턴 기반 마스킹 한계가 남는다. Phase 4B 전 모델·비용·호출·보관 정책과 실제 격리를 결정하고 검증해야 한다.
+- GitHub Actions: [PR 검증](https://github.com/CodingBot000/RCA_Agent/actions/runs/42867524643)과 [push 검증](https://github.com/CodingBot000/RCA_Agent/actions/runs/42867513065)이 성공했다. 이 기록을 반영한 후속 커밋에서도 필수 CI를 확인한다.

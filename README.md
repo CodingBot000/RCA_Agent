@@ -94,3 +94,9 @@ PYTHONPATH="$PWD/src" /path/to/venv/bin/python scripts/verify_rcaeval_compat.py 
 과거 seed 42 표본은 공개 선정 규칙과 인덱스를 결합하면 정답을 재구성할 수 있다. 새 표본도 보존된 telemetry 값을 공개 데이터와 대조하면 역추적될 수 있으므로 공개 저장소나 네트워크를 평가 에이전트에 제공하지 않는다. 이미 공개된 Git 기록을 `.gitignore`로 비공개화할 수는 없다.
 
 선택 키(`selection.key`)는 평가자만 읽을 수 있게 보관한다. 키를 잃으면 동일한 비공개 표본과 ID를 재구성할 수 없다. 별도 키를 지정한다면 암호학적으로 안전하게 생성한 32바이트 키여야 한다. 새 경로로 같은 표본을 다시 다운로드하려면 `download <새-경로> --key <평가자-전용-selection.key>`를 사용한다. 변환은 알려진 시각·UUID·IPv4·이메일·긴 16진수/숫자 패턴 및 trace ID를 가리지만, 모든 민감정보나 원본 telemetry 지문 역매칭을 막지 못한다. 메트릭 수치는 보존되므로 공개 데이터에 접근하거나 사전 지식이 있는 에이전트의 완전한 블라인드는 보장되지 않는다.
+
+## Phase 2 조회 및 근거
+
+`rca_agent.telemetry.TelemetryTools`는 승인된 Phase 1 blind Parquet 디렉터리와 사례별 `EvidenceRegistry`를 받아 메트릭·로그·트레이스를 조회한다. 범위는 메트릭의 사례 시간 범위 안에서 `[start, end)`이며 호출당 결과는 1~100건이다. 성공·결과 없음·자료 부재·오류를 구분하고 성공 결과만 근거로 등록한다. `finalize`는 조회 근거가 없으면 `insufficient_evidence`를 반환한다. 공식 RCAEval 채점기와 Phase 2 결과의 호환성은 미검증이다.
+
+서비스 이름은 각 데이터 파일의 값을 정확하게 비교한다. 실제 RE2-OB의 trace 서비스에 `frontendservice`가 존재하지만 메트릭 후보에는 `frontend`가 존재하므로 두 이름을 자동으로 동일시하지 않는다. 제공된 사례의 메트릭 시간 범위 밖 데이터는 조회하지 않는다. 이 도구의 경로 검사는 OS 보안 경계가 아니며 blind만 제공하는 읽기 전용 컨테이너가 필요하다.

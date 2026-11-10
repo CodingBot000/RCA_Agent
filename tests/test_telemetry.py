@@ -98,9 +98,12 @@ def test_empty_missing_and_failed_evidence(tools):
         tools.registry.register(
             EvidenceRecord("id", "other", "call", "logs", "content"), status="ok"
         )
-    tools.registry.register(record, status="ok")
     with pytest.raises(ContractError):
         tools.registry.register(record, status="ok")
+    actual = tools.query_metrics(tools.task.case_id, "api", 100, 103, 1, "api_cpu")
+    registered = tools.registry._records[actual.evidence_id]
+    with pytest.raises(ContractError):
+        tools.registry.register(registered, status="ok", _proof=tools.registry._capability)
 
 
 def test_finalize_requires_observed_evidence(tools):

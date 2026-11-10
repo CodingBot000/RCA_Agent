@@ -41,9 +41,10 @@ class EvidenceRegistry:
     def __init__(self, case_id: str):
         self.case_id = case_id
         self._records: dict[str, EvidenceRecord] = {}
+        self._capability = object()
 
-    def register(self, record: EvidenceRecord, *, status: str) -> None:
-        if status != "ok":
+    def register(self, record: EvidenceRecord, *, status: str, _proof: object = None) -> None:
+        if status != "ok" or _proof is not self._capability:
             raise ContractError("only successful queries may create evidence")
         if record.case_id != self.case_id:
             raise ContractError("cross-case evidence")
@@ -213,7 +214,9 @@ class TelemetryTools:
             )
             evidence_id = hashlib.sha256(content.encode()).hexdigest()
             self.registry.register(
-                EvidenceRecord(evidence_id, case_id, call, kind, content), status="ok"
+                EvidenceRecord(evidence_id, case_id, call, kind, content),
+                status="ok",
+                _proof=self.registry._capability,
             )
             return QueryResponse("ok", call, evidence_id, tuple(rows), truncated=truncated)
         except (ContractError, OSError, ValueError, TypeError, KeyError) as exc:

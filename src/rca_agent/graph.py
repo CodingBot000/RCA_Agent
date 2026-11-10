@@ -1,10 +1,13 @@
 """Offline StateGraph orchestration with injected scripted reasoning."""
 
 import hashlib
+import json
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Protocol, TypedDict
 
+import pyarrow.compute as pc
+import pyarrow.parquet as pq
 from langgraph.graph import END, START, StateGraph
 from langsmith import tracing_context
 
@@ -27,16 +30,65 @@ class Limits:
 
 
 @dataclass(frozen=True)
+class ObservationLimits:
+    max_records: int
+    max_chars: int
+
+    def __post_init__(self):
+        if (
+            type(self.max_records) is not int
+            or not 1 <= self.max_records <= 100
+            or type(self.max_chars) is not int
+            or self.max_chars < 1
+        ):
+            raise ValueError("explicit positive observation limits are required")
+
+
+@dataclass(frozen=True)
 class Failure:
     reason: str
     status: str = "failed"
 
 
+@dataclass(frozen=True)
+class CaseContext:
+    case_id: str
+    candidates: tuple[str, ...]
+    services: tuple[str, ...]
+    start: int
+    end: int
+
+    @classmethod
+    def from_tools(cls, tools: TelemetryTools) -> "CaseContext":
+        path = tools.case / "metrics.parquet"
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("metrics data unavailable")
+        bounds = pc.min_max(pq.read_table(path, columns=["time"])["time"]).as_py()
+        if bounds["min"] is None or bounds["max"] is None:
+            raise ValueError("metrics time range unavailable")
+        return cls(
+            tools.task.case_id,
+            tools.task.candidates,
+            tuple(sorted(tools.services)),
+            int(bounds["min"]),
+            int(bounds["max"]) + 1,
+        )
+
+
+@dataclass(frozen=True)
+class Observation:
+    case_id: str
+    source: str
+    call_id: str
+    evidence_id: str
+    arguments: dict[str, Any]
+    records: tuple[dict[str, Any], ...]
+    truncated: bool
+
+
 class Reasoner(Protocol):
-    def investigate(
-        self, history: tuple[dict, ...], candidates: tuple[str, ...]
-    ) -> dict | None: ...
-    def hypothesize(self, history: tuple[dict, ...], candidates: tuple[str, ...]) -> list[dict]: ...
+    def investigate(self, history: tuple[dict, ...], context: CaseContext) -> dict | None: ...
+    def hypothesize(self, history: tuple[dict, ...], context: CaseContext) -> list[dict]: ...
 
 
 class ScriptedReasoner:
@@ -63,6 +115,27 @@ class ScriptedReasoner:
             hypothesis["evidence_ids"] = [
                 latest if eid == "$latest" else eid for eid in hypothesis.get("evidence_ids", [])
             ]
+            for claim in hypothesis.get("claims", []):
+                if claim.get("evidence_id") == "$latest":
+                    claim["evidence_id"] = latest
+                if claim.get("value") == "$observed":
+                    obs = next(
+                        (
+                            item.get("observation")
+                            for item in reversed(history)
+                            if item.get("evidence_id") == claim.get("evidence_id")
+                        ),
+                        None,
+                    )
+                    index, field = claim.get("record_index"), claim.get("field")
+                    if (
+                        obs
+                        and type(index) is int
+                        and 0 <= index < len(obs.records)
+                        and field in obs.records[index]
+                    ):
+                        claim["value"] = obs.records[index][field]
+
         return hypotheses
 
 
@@ -76,20 +149,40 @@ class State(TypedDict):
     evidence: list[str]
 
 
-def run_agent(tools: TelemetryTools, reasoner: Reasoner, limits: Limits) -> dict[str, Any]:
+def run_agent(
+    tools: TelemetryTools, reasoner: Reasoner, limits: Limits, observation_limits: ObservationLimits
+) -> dict[str, Any]:
     """No network/model calls; reasoning and tools are supplied by the caller."""
-    if not isinstance(tools, TelemetryTools) or not isinstance(limits, Limits):
-        raise TypeError("TelemetryTools and Limits required")
+    if (
+        not isinstance(tools, TelemetryTools)
+        or not isinstance(limits, Limits)
+        or not isinstance(observation_limits, ObservationLimits)
+    ):
+        raise TypeError("TelemetryTools, Limits and ObservationLimits required")
+    try:
+        context = CaseContext.from_tools(tools)
+    except (OSError, ValueError, KeyError):
+        return {
+            "history": [],
+            "hypotheses": [],
+            "calls": 0,
+            "iterations": 0,
+            "failure": "case_context_error",
+            "result": None,
+            "evidence": [],
+            "failure_envelope": Failure("case_context_error"),
+        }
     registry = tools.registry
     # Never allow evidence that pre-dates this run to authorize a result.
     observed: dict[str, str] = {}
+    observations: dict[str, Observation] = {}
 
     def investigation(s: State):
         if s["iterations"] >= limits.max_iterations:
             return {"failure": "iteration_limit"}
         iteration = s["iterations"] + 1
         try:
-            request = reasoner.investigate(tuple(deepcopy(s["history"])), tools.task.candidates)
+            request = reasoner.investigate(tuple(deepcopy(s["history"])), context)
         except Exception:  # noqa: BLE001 - reasoner/tool boundary returns a failure envelope
             return {"failure": "reasoner_error", "iterations": iteration}
         if request is None:
@@ -118,6 +211,56 @@ def run_agent(tools: TelemetryTools, reasoner: Reasoner, limits: Limits) -> dict
                 "evidence_id": response.evidence_id,
             }
             if response.status == "ok" and response.evidence_id:
+                entry = registry._records.get(response.evidence_id)
+                if (
+                    entry is None
+                    or entry.case_id != context.case_id
+                    or entry.call_id != response.call_id
+                    or entry.source != kind
+                    or hashlib.sha256(entry.content.encode()).hexdigest() != response.evidence_id
+                ):
+                    raise ValueError("invalid observation provenance")
+                content = json.loads(entry.content)
+                if (
+                    content.get("records") != list(response.records)
+                    or content.get("call_id") != response.call_id
+                    or content.get("source") != kind
+                    or any(
+                        content.get(field) != args.get(field)
+                        for field in ("service", "start", "end")
+                    )
+                    or content.get("truncated") != response.truncated
+                ):
+                    raise ValueError("observation does not match registry")
+                rows = []
+                for row in response.records:
+                    if len(rows) >= observation_limits.max_records:
+                        break
+                    candidate = [*rows, row]
+                    if (
+                        len(json.dumps(candidate, ensure_ascii=False, allow_nan=False))
+                        > observation_limits.max_chars
+                    ):
+                        break
+                    rows = candidate
+                if not rows:
+                    return {
+                        "iterations": iteration,
+                        "calls": calls,
+                        "history": [*s["history"], record],
+                        "failure": "observation_limit",
+                    }
+                observation = Observation(
+                    context.case_id,
+                    kind,
+                    response.call_id,
+                    response.evidence_id,
+                    deepcopy(args),
+                    tuple(deepcopy(rows)),
+                    response.truncated or len(rows) < len(response.records),
+                )
+                observations[response.evidence_id] = observation
+                record["observation"] = observation
                 observed[response.evidence_id] = response.call_id
             return {
                 "iterations": iteration,
@@ -135,7 +278,7 @@ def run_agent(tools: TelemetryTools, reasoner: Reasoner, limits: Limits) -> dict
 
     def hypothesis(s: State):
         try:
-            h = reasoner.hypothesize(tuple(deepcopy(s["history"])), tools.task.candidates)
+            h = reasoner.hypothesize(tuple(deepcopy(s["history"])), context)
             if not isinstance(h, list):
                 raise TypeError("invalid hypotheses")
             return {"hypotheses": h}
@@ -168,6 +311,35 @@ def run_agent(tools: TelemetryTools, reasoner: Reasoner, limits: Limits) -> dict
                     valid = False
                     break
                 used.append(eid)
+            claims = h.get("claims")
+            if not isinstance(claims, list) or not claims:
+                valid = False
+                break
+            for claim in claims:
+                if not isinstance(claim, dict) or set(claim) != {
+                    "evidence_id",
+                    "record_index",
+                    "field",
+                    "value",
+                }:
+                    valid = False
+                    break
+                eid = claim["evidence_id"]
+                obs = observations.get(eid) if isinstance(eid, str) else None
+                index = claim["record_index"]
+                field = claim["field"]
+                if (
+                    obs is None
+                    or eid not in h["evidence_ids"]
+                    or type(index) is not int
+                    or not 0 <= index < len(obs.records)
+                    or not isinstance(field, str)
+                    or field not in obs.records[index]
+                    or type(obs.records[index][field]) is not type(claim["value"])
+                    or obs.records[index][field] != claim["value"]
+                ):
+                    valid = False
+                    break
         failure = ""
         if not valid:
             failure = (
@@ -187,7 +359,14 @@ def run_agent(tools: TelemetryTools, reasoner: Reasoner, limits: Limits) -> dict
             for x in s["history"]
             if "kind" in x and "arguments" in x
         ]
-        raw = {"case_id": tools.task.case_id, "ranking": s["hypotheses"], "tool_calls": calls}
+        raw = {
+            "case_id": tools.task.case_id,
+            "ranking": [
+                {k: h[k] for k in ("candidate", "explanation", "evidence_ids")}
+                for h in s["hypotheses"]
+            ],
+            "tool_calls": calls,
+        }
         status, result = registry.finalize(raw, tools.task)
         return {"result": result, "failure": "" if status == "ok" else status}
 

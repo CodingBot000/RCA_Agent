@@ -103,6 +103,6 @@ PYTHONPATH="$PWD/src" /path/to/venv/bin/python scripts/verify_rcaeval_compat.py 
 
 ## Phase 3 오프라인 그래프
 
-`rca_agent.graph.run_agent`에 사례별 `TelemetryTools`, 교체 가능한 `Reasoner`, 실행자가 명시한 `Limits(max_tool_calls, max_iterations)`를 전달한다. `ScriptedReasoner`는 테스트용 질의·가설을 실행하며 `$latest`를 현재 실행에서 성공한 최신 근거로 바꾼다. 실제 모델 사용이나 정확도 측정이 아니다. 반환값은 조사 이력·호출 횟수·가설·결과 또는 실패 envelope를 포함한다. 외부 tracing은 그래프 실행 중 비활성화된다.
+`rca_agent.graph.run_agent`에 사례별 `TelemetryTools`, 교체 가능한 `Reasoner`, 실행자가 명시한 `Limits(max_tool_calls, max_iterations)`와 `ObservationLimits(max_records, max_chars)`를 전달한다. `ScriptedReasoner`는 테스트용 질의·가설을 실행하며 `$latest`를 현재 실행에서 성공한 최신 근거로 바꾼다. Phase 4A에서는 Reasoner가 CaseContext와 제한된 실제 Observation을 받고 가설에 실제 전달된 필드·값을 명시해야 한다. ScriptedReasoner는 명시적 claim의 `$latest`와 `$observed`를 치환한다. 관측값 일치는 인과관계를 증명하지 않는다. 실제 모델 사용이나 정확도 측정이 아니다. 반환값은 조사 이력·호출 횟수·가설·결과 또는 실패 envelope를 포함한다. 외부 tracing은 그래프 실행 중 비활성화된다.
 
 직접 `EvidenceRegistry.register(status="ok")`를 호출하는 기존 사용법은 거부된다. 실제 조회로 등록된 근거만 그래프에서 사용하며, 현재 실행에서 관측한 성공 호출과 별도로 대조한다. Python Reasoner는 신뢰된 in-process 코드여야 한다. 이 검사는 임의 Python에 대한 샌드박스가 아니므로 정답 격리 및 네트워크 차단은 별도의 실행 환경으로 강제한다. 실제 모델 평가에 필요한 호출·비용 정책은 미정이다.

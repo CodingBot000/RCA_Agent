@@ -100,3 +100,9 @@ PYTHONPATH="$PWD/src" /path/to/venv/bin/python scripts/verify_rcaeval_compat.py 
 `rca_agent.telemetry.TelemetryTools`는 승인된 Phase 1 blind Parquet 디렉터리와 사례별 `EvidenceRegistry`를 받아 메트릭·로그·트레이스를 조회한다. 범위는 메트릭의 사례 시간 범위 안에서 `[start, end)`이며 호출당 결과는 1~100건이다. 성공·결과 없음·자료 부재·오류를 구분하고 성공 결과만 근거로 등록한다. `finalize`는 조회 근거가 없으면 `insufficient_evidence`를 반환한다. 공식 RCAEval 채점기와 Phase 2 결과의 호환성은 미검증이다.
 
 서비스 이름은 각 데이터 파일의 값을 정확하게 비교한다. 실제 RE2-OB의 trace 서비스에 `frontendservice`가 존재하지만 메트릭 후보에는 `frontend`가 존재하므로 두 이름을 자동으로 동일시하지 않는다. 제공된 사례의 메트릭 시간 범위 밖 데이터는 조회하지 않는다. 이 도구의 경로 검사는 OS 보안 경계가 아니며 blind만 제공하는 읽기 전용 컨테이너가 필요하다.
+
+## Phase 3 오프라인 그래프
+
+`rca_agent.graph.run_agent`에 사례별 `TelemetryTools`, 교체 가능한 `Reasoner`, 실행자가 명시한 `Limits(max_tool_calls, max_iterations)`를 전달한다. `ScriptedReasoner`는 테스트용 질의·가설을 실행하며 `$latest`를 현재 실행에서 성공한 최신 근거로 바꾼다. 실제 모델 사용이나 정확도 측정이 아니다. 반환값은 조사 이력·호출 횟수·가설·결과 또는 실패 envelope를 포함한다. 외부 tracing은 그래프 실행 중 비활성화된다.
+
+직접 `EvidenceRegistry.register(status="ok")`를 호출하는 기존 사용법은 거부된다. 실제 조회로 등록된 근거만 그래프에서 사용하며, 현재 실행에서 관측한 성공 호출과 별도로 대조한다. Python Reasoner는 신뢰된 in-process 코드여야 한다. 이 검사는 임의 Python에 대한 샌드박스가 아니므로 정답 격리 및 네트워크 차단은 별도의 실행 환경으로 강제한다. 실제 모델 평가에 필요한 호출·비용 정책은 미정이다.

@@ -106,3 +106,73 @@ def test_tool_error_status_is_failure(tools):
     result = run_agent(tools, InvalidService(), Limits(2, 2))
     assert result["failure"] == "tool_error" and result["calls"] == 1
     assert result["history"][0]["status"] == "error"
+
+
+def test_evidence_from_before_run_cannot_authorize_result(tools):
+    old = tools.query_metrics(tools.task.case_id, "api", 100, 103, 1, "api_cpu")
+
+    class OldEvidence(Scripted):
+        def hypothesize(self, history, candidates):
+            return [
+                {"candidate": "api_cpu", "explanation": "old", "evidence_ids": [old.evidence_id]}
+            ]
+
+    result = run_agent(tools, OldEvidence(), Limits(1, 1))
+    assert result["result"] is None and result["failure_envelope"] is not None
+
+
+def test_missing_telemetry_never_creates_evidence(tools):
+    (tools.case / "metrics.parquet").unlink()
+    result = run_agent(tools, Scripted(), Limits(2, 2))
+    assert result["result"] is None and result["calls"] == 1
+    assert result["history"][0]["status"] == "error"
+
+
+def test_unavailable_logs_are_counted_and_do_not_make_evidence(tools):
+    class MissingLogs(Scripted):
+        def investigate(self, history, candidates):
+            return {"kind": "logs", "service": "api", "start": 100, "end": 103, "limit": 2}
+
+    (tools.case / "logs.parquet").unlink()
+    result = run_agent(tools, MissingLogs(), Limits(1, 1))
+    assert result["calls"] == 1 and result["history"][0]["status"] == "unavailable"
+    assert result["result"] is None and not tools.registry._records
+
+
+def test_builtin_scripted_reasoner(tools):
+    from rca_agent.graph import ScriptedReasoner
+
+    reasoner = ScriptedReasoner(
+        [
+            {
+                "kind": "metrics",
+                "service": "api",
+                "start": 100,
+                "end": 103,
+                "limit": 2,
+                "indicator": "api_cpu",
+            }
+        ],
+        [{"candidate": "api_cpu", "explanation": "synthetic", "evidence_ids": ["$latest"]}],
+    )
+    result = run_agent(tools, reasoner, Limits(1, 1))
+    assert result["result"] is not None and result["calls"] == 1
+
+
+def test_forged_registry_record_does_not_match_observed_call(tools):
+    import hashlib
+
+    from rca_agent.telemetry import EvidenceRecord
+
+    class ForgingReasoner(Scripted):
+        def hypothesize(self, history, candidates):
+            content = "fabricated"
+            evidence_id = hashlib.sha256(content.encode()).hexdigest()
+            forged = EvidenceRecord(
+                evidence_id, tools.task.case_id, "fake-call", "metrics", content
+            )
+            tools.registry.register(forged, status="ok", _proof=tools.registry._capability)
+            return [{"candidate": "api_cpu", "explanation": "fake", "evidence_ids": [evidence_id]}]
+
+    state = run_agent(tools, ForgingReasoner(), Limits(1, 1))
+    assert state["result"] is None and state["failure_envelope"] is not None

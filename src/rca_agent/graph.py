@@ -1,6 +1,7 @@
 """Offline StateGraph orchestration with injected scripted reasoning."""
 
 import hashlib
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Protocol, TypedDict
 
@@ -38,6 +39,33 @@ class Reasoner(Protocol):
     def hypothesize(self, history: tuple[dict, ...], candidates: tuple[str, ...]) -> list[dict]: ...
 
 
+class ScriptedReasoner:
+    """Offline scripted queries and hypotheses; `$latest` references a successful call."""
+
+    def __init__(self, queries: list[dict], hypotheses: list[dict]):
+        self._queries = deepcopy(queries)
+        self._hypotheses = deepcopy(hypotheses)
+
+    def investigate(self, history: tuple[dict, ...], candidates: tuple[str, ...]) -> dict | None:
+        return deepcopy(self._queries[len(history)]) if len(history) < len(self._queries) else None
+
+    def hypothesize(self, history: tuple[dict, ...], candidates: tuple[str, ...]) -> list[dict]:
+        latest = next(
+            (
+                item["evidence_id"]
+                for item in reversed(history)
+                if item.get("status") == "ok" and item.get("evidence_id")
+            ),
+            None,
+        )
+        hypotheses = deepcopy(self._hypotheses)
+        for hypothesis in hypotheses:
+            hypothesis["evidence_ids"] = [
+                latest if eid == "$latest" else eid for eid in hypothesis.get("evidence_ids", [])
+            ]
+        return hypotheses
+
+
 class State(TypedDict):
     history: list[dict]
     hypotheses: list[dict]
@@ -61,9 +89,7 @@ def run_agent(tools: TelemetryTools, reasoner: Reasoner, limits: Limits) -> dict
             return {"failure": "iteration_limit"}
         iteration = s["iterations"] + 1
         try:
-            request = reasoner.investigate(
-                tuple(dict(x) for x in s["history"]), tools.task.candidates
-            )
+            request = reasoner.investigate(tuple(deepcopy(s["history"])), tools.task.candidates)
         except Exception:  # noqa: BLE001 - reasoner/tool boundary returns a failure envelope
             return {"failure": "reasoner_error", "iterations": iteration}
         if request is None:
@@ -109,7 +135,7 @@ def run_agent(tools: TelemetryTools, reasoner: Reasoner, limits: Limits) -> dict
 
     def hypothesis(s: State):
         try:
-            h = reasoner.hypothesize(tuple(dict(x) for x in s["history"]), tools.task.candidates)
+            h = reasoner.hypothesize(tuple(deepcopy(s["history"])), tools.task.candidates)
             if not isinstance(h, list):
                 raise TypeError("invalid hypotheses")
             return {"hypotheses": h}

@@ -1,0 +1,12 @@
+# Phase 4B-2 진행 기록
+
+- SDD·영향 분석: 완료. 기존 LLMReasoner·OfflineBroker의 계약을 사용한다. 실제 모델 Provider나 네트워크 연결은 구현하지 않았다. IPC 프레임·총 메시지 수·고유 요청 수·사례 수·시간 제한과 사례별/평가 전체 예산은 실행자가 필수로 지정한다. 테스트 수치는 운영 정책이 아니다.
+- 구현: 신뢰된 호스트 실행기가 별도 Agent와 Fake Broker 프로세스를 익명 stdin/stdout 파이프로 중계한다. 모델 입력과 출력은 엄격한 Pydantic JSON Schema 및 추가 allowlist·관측 claim 검사를 거친다. 프레임 크기·중복 JSON 키·버전·요청 ID를 검사하고 응답 ID를 대조한다. 동일 ID와 동일 내용의 세션 내 재전송은 캐시 응답을 사용하고, 다른 내용의 ID 재사용은 거부한다. 불명확한 IPC 실패 후 자동 재시작·재시도는 하지 않는다.
+- 예산: 사례별 OfflineBroker 원장과 평가 전체 OfflineBroker 원장을 중첩해 Fake 호출·토큰·비용을 별도로 계수한다. 재시도의 실제 각 호출은 각 원장에 한 번씩 반영하고, 동일 IPC 요청 재전송은 다시 과금하지 않는다. 사례·전체 도구 호출 및 반복의 상한도 신뢰된 relay에서 보수적으로 검사한다. 현재 fixture 실행기는 Agent 한 사례를 실행하며, 여러 사례의 전체 예산은 독립적인 합성 단위 테스트로 확인했다. 병렬 다중 Agent 실행은 구현하지 않았다. 사례 원장이 사전 거부한 요청도 전체 원장에는 보수적으로 호출 시도로 계수될 수 있어 실제 Provider 호출 수보다 클 수 있다. 동일 IPC ID의 재전송은 이 경로에 들어가지 않는다.
+- macOS OS 격리 E2E: `sandbox-exec`로 두 프로세스에 네트워크·파일 쓰기·fork/posix_spawn을 금지했다. 합성 사례에서 Agent만 blind 파일을 읽고, Agent와 Broker의 합성 정답·키 읽기와 Agent의 localhost/TEST-NET 연결이 권한 오류로 거부되었다. Broker의 blind 읽기도 거부되었다. Agent에서 기존 LangGraph, LLMReasoner 및 실제 합성 Parquet 조회를 실행했고 IPC 요청 3회 중 중복 1회는 캐시되어 Fake Provider 호출은 2회였다. `tests/test_ipc_runner.py::test_two_process_sandbox_and_replay`로 재현한다. 실제 Ground Truth, 실제 모델과 외부 API는 사용하지 않았다.
+- 오류·종료: 잘못된 JSON·중복 키·과대 프레임·변경된 동일 ID·미승인 스키마/claim·파이프 오류·timeout을 거부한다. 타임아웃 시 프로세스 그룹을 SIGKILL하고 leader를 wait하며 남은 그룹이 있으면 실패로 보고한다. 샌드박스에서는 fork와 posix_spawn이 거부된다. 별도 합성 process-group 시험에서는 실행 중인 부모와 자식을 종료했다. 부모가 먼저 종료된 뒤 자식이 zombie로 남는 경우 그룹 확인 실패를 숨기지 않는다. 외부 API 요청이나 청구의 취소는 보장하지 않는다.
+- 공개 로그: 원본 telemetry 및 자격 증명을 출력하지 않고 일반 오류 코드와 집계만 반환한다. 합성 비밀 값이 출력되지 않는 테스트를 수행했다. 프로세스 간 데이터는 메모리·파이프에 일시적으로 존재하므로 이를 공개 로그로 직렬화해서는 안 된다.
+- BLOCKED: Linux 및 기타 OS에서 동등한 OS 격리·강제 종료는 구현·검증하지 않았으며 fail closed다. macOS 프로필은 일반 시스템 파일 접근을 허용하는 deny-list 방식이므로 임의 위치의 모든 자격 증명이나 악의적인 로컬 사용자에 대한 완전한 파일시스템 격리를 증명하지 않는다. 인증된 외부 API Broker, 실제 네트워크 allowlist, 실제 Provider 토큰·가격·취소 및 여러 Agent의 운영 환경은 미구현·미검증이다. 단일 세션 밖의 replay 영속성·재시작 후 중복 방지는 제공하지 않으며 상태가 불명확하면 수동 재조정이 필요하다. telemetry의 prompt injection과 공개 원본 지문 역추적 위험도 남는다.
+
+- 최종 로컬 검증: `UV_OFFLINE=1 make check` 및 `UV_OFFLINE=1 make harness-verify` 각각 144건 통과. 기존 121개 테스트를 유지했다. 금액을 포함한 사례별·전체 원장과 확인된 사용량의 재시도 회계를 합성 테스트로 확인했다.
+- GitHub CI: PR #12의 [push 실행](https://github.com/CodingBot000/RCA_Agent/actions/runs/43054594812)과 [PR 실행](https://github.com/CodingBot000/RCA_Agent/actions/runs/43054605590)이 성공했다. Linux에서는 비지원 플랫폼의 fail-closed 경로를 확인하며 macOS 격리 E2E가 실행된 것은 아니다. 이 기록을 추가한 후속 커밋에서도 필수 CI를 확인한다.

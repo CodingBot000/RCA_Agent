@@ -114,3 +114,13 @@ PYTHONPATH="$PWD/src" /path/to/venv/bin/python scripts/verify_rcaeval_compat.py 
 입력 토큰 상한과 출력 예약량은 보수적인 신뢰된 계산을 전제한다. 예외·시간 초과로 사용량이 불명확하면 더 이상 호출하지 않는다. `OfflineBroker`의 타임아웃은 호출자에게 중단을 알리지만 Python 스레드 자체를 강제 종료하지 못한다. 동시에 실행되는 실제 요청이나 청구가 끝났다는 의미가 아니다. 동시 Agent 실행과 요청은 공유 broker 인스턴스에서 제한하지만, 예산도 그 인스턴스를 공유하는 실행에 누적된다. 실행별 독립 예산은 별도 인스턴스를 사용한다. 공유 프로세스 밖의 전역 예산 제한은 제공하지 않는다. 실제 외부 API 연결은 구현되어 있지 않으며, 독립된 OS 권한·네트워크 경계와 인증된 Broker, 제공자별 사용량·요금 및 취소 보장이 검증되기 전에는 연결하지 않는다.
 
 `run_agent`의 내부 상태에는 telemetry가 들어갈 수 있으므로 공개 로그로 직렬화하지 않는다. `rca_agent.public_report.public_run_report`는 모델·버전·호출·토큰·비용·실패 사유만 allowlist로 내보낸다. 사용한 식별자와 보관 정책도 공개 전 검토한다. 프롬프트 구분과 JSON Schema는 prompt injection의 완전한 방어가 아니다.
+
+## Phase 4B-2 격리된 Fake IPC 시험
+
+`rca_agent.ipc_runner.run_fixture`는 macOS `sandbox-exec`에서 합성 blind fixture만 사용하는 Agent·Fake Broker를 별도 프로세스로 실행한다. 신뢰된 실행기가 익명 stdin/stdout 파이프를 중계하며 OS 정책은 Agent와 Broker의 네트워크·쓰기·프로세스 생성을 차단한다. 프레임·메시지·요청·사례·시간 한도, 사례별 Budget, 평가 전체 Budget, ObservationLimits와 Fake 가격을 각각 명시한다. 사용 예시는 `tests/test_ipc_runner.py`다.
+
+```sh
+UV_OFFLINE=1 uv run --locked pytest -q tests/test_ipc_runner.py tests/test_ipc_protocol.py
+```
+
+이 fixture는 실모델 API, 상시 서버 또는 운영용 Broker가 아니다. Agent·Broker는 하나씩 실행되고 세션 내에서만 replay를 제거한다. Linux 등은 격리 없이 실행하지 않고 실패한다. macOS의 접근 제한은 테스트한 경로와 환경에 대한 결과이며 임의 위치의 모든 비밀에 대한 완전한 파일시스템 allowlist가 아니다. 실제 외부 API에 필요한 최소 권한 격리, 인증·네트워크 정책, timeout 후 외부 청구 정산과 재시작 시 중복 방지는 별도 구현·검증이 필요하다. IPC 메시지에는 telemetry가 포함될 수 있으므로 출력이나 공개 로그에 기록하지 않는다.

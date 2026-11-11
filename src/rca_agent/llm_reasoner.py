@@ -101,6 +101,12 @@ class LLMReasoner:
     def execution_limits(self) -> tuple[int, int]:
         return self.broker.execution_limits()
 
+    def begin_run(self) -> bool:
+        return self.broker.begin_run()
+
+    def end_run(self) -> None:
+        self.broker.end_run()
+
     def public_summary(self) -> dict:
         summary = self.broker.summary()
         return {**summary, "failure": self.failure or summary["failure"]}

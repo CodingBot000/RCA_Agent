@@ -243,3 +243,39 @@ def test_model_response_error_traceback_does_not_expose_content():
     with pytest.raises(BrokerFailure) as caught:
         LLMReasoner(make_broker(p)).investigate((), context())
     assert "SECRET_TELEMETRY" not in "".join(traceback.format_exception(caught.value))
+
+
+def test_concurrent_graph_runs_respect_broker_limit(tools):
+    import threading
+
+    from rca_agent.telemetry import EvidenceRegistry, TelemetryTools
+
+    started, release = threading.Event(), threading.Event()
+
+    class Blocking(FakeProvider):
+        def complete(self, payload, max_output_tokens, *, model):
+            started.set()
+            assert release.wait(3)
+            return ProviderResult('{"kind":"shell"}', usage())
+
+    shared = make_broker(Blocking([], 20))
+    second_tools = TelemetryTools(
+        tools.case.parent, tools.task.case_id, EvidenceRegistry(tools.task.case_id)
+    )
+    outcomes = []
+    worker = threading.Thread(
+        target=lambda: outcomes.append(
+            run_agent(tools, LLMReasoner(shared), Limits(2, 2), ObservationLimits(1, 1000))
+        )
+    )
+    worker.start()
+    try:
+        assert started.wait(3)
+        blocked = run_agent(
+            second_tools, LLMReasoner(shared), Limits(2, 2), ObservationLimits(1, 1000)
+        )
+        assert blocked["failure"] == "concurrency_limit" and blocked["calls"] == 0
+    finally:
+        release.set()
+        worker.join(3)
+    assert not worker.is_alive() and len(outcomes) == 1

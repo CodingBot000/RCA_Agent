@@ -435,10 +435,25 @@ def run_agent(
         "result": None,
         "evidence": [],
     }
-    with tracing_context(enabled=False):
-        state = graph.compile().invoke(
-            initial, config={"recursion_limit": 5 * limits.max_iterations + 10}
-        )
+    begin_run = getattr(reasoner, "begin_run", None)
+    end_run = getattr(reasoner, "end_run", None)
+    if callable(begin_run) and (not callable(end_run) or not begin_run()):
+        metadata = reasoner.public_summary()
+        metadata["failure"] = "concurrency_limit"
+        return {
+            **initial,
+            "failure": "concurrency_limit",
+            "failure_envelope": Failure("concurrency_limit"),
+            "model_metadata": metadata,
+        }
+    try:
+        with tracing_context(enabled=False):
+            state = graph.compile().invoke(
+                initial, config={"recursion_limit": 5 * limits.max_iterations + 10}
+            )
+    finally:
+        if callable(begin_run) and callable(end_run):
+            end_run()
     metadata = None
     summary = getattr(reasoner, "public_summary", None)
     if callable(summary):

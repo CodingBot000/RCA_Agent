@@ -98,6 +98,8 @@ class ModelBroker(Protocol):
     def request(self, payload: dict) -> str: ...
     def summary(self) -> dict: ...
     def execution_limits(self) -> tuple[int, int]: ...
+    def begin_run(self) -> bool: ...
+    def end_run(self) -> None: ...
 
 
 def _bounded_call(function, timeout):
@@ -149,6 +151,7 @@ class OfflineBroker:
         self.budget, self.pricing = budget, pricing
         self._lock = Lock()
         self._slots = BoundedSemaphore(budget.max_concurrency)
+        self._run_slots = BoundedSemaphore(budget.max_concurrency)
         self.calls = self.input_tokens = self.output_tokens = self.active = 0
         self.cost = Decimal(0)
         self.reserved_input = self.reserved_output = 0
@@ -295,6 +298,12 @@ class OfflineBroker:
                 self._fail("invalid_provider_response", block=True)
             return result.content
         raise BrokerFailure("provider_error")
+
+    def begin_run(self) -> bool:
+        return self._run_slots.acquire(blocking=False)
+
+    def end_run(self) -> None:
+        self._run_slots.release()
 
     def execution_limits(self) -> tuple[int, int]:
         return self.budget.max_tool_calls, self.budget.max_iterations

@@ -124,3 +124,7 @@ UV_OFFLINE=1 uv run --locked pytest -q tests/test_ipc_runner.py tests/test_ipc_p
 ```
 
 이 fixture는 실모델 API, 상시 서버 또는 운영용 Broker가 아니다. Agent·Broker는 하나씩 실행되고 세션 내에서만 replay를 제거한다. Linux 등은 격리 없이 실행하지 않고 실패한다. macOS의 접근 제한은 테스트한 경로와 환경에 대한 결과이며 임의 위치의 모든 비밀에 대한 완전한 파일시스템 allowlist가 아니다. 실제 외부 API에 필요한 최소 권한 격리, 인증·네트워크 정책, timeout 후 외부 청구 정산과 재시작 시 중복 방지는 별도 구현·검증이 필요하다. IPC 메시지에는 telemetry가 포함될 수 있으므로 출력이나 공개 로그에 기록하지 않는다.
+
+## Phase 4B-3A 오프라인 Provider 시험
+
+`OpenAIProvider`는 공식 SDK와 Mock HTTP transport로 Responses 요청과 사용량 집계를 시험한다. 실제 키를 읽지 않으며 일반 네트워크 transport를 거부한다. 실제 API 접근, 입력 토큰 상한의 보수성, 실모델 스키마 호환성 및 OS 네트워크·파일 격리는 검증되지 않았다. 이 구성은 운영용 Broker가 아니며 Phase 4B-3B의 격리 검증 없이 실데이터에 사용하지 않는다.

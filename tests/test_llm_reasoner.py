@@ -105,7 +105,8 @@ def test_cross_case_observation_never_reaches_provider():
 
 def test_fake_provider_graph_e2e(tools):
     class Dynamic(FakeProvider):
-        def complete(self, payload, max_output_tokens, *, model):
+        def complete(self, request):
+            payload = request.payload()
             self.payloads.append(payload)
             if payload["phase"] == "investigate":
                 data = {
@@ -167,7 +168,8 @@ def test_injection_text_cannot_authorize_shell_or_ground_truth(tools):
     )
 
     class Injected(FakeProvider):
-        def complete(self, payload, max_output_tokens, *, model):
+        def complete(self, request):
+            payload = request.payload()
             self.payloads.append(payload)
             if payload["phase"] == "investigate":
                 text = json.dumps(
@@ -188,7 +190,7 @@ def test_injection_text_cannot_authorize_shell_or_ground_truth(tools):
 
 def test_graph_reports_timeout_without_provider_details(tools):
     class TimedOut(FakeProvider):
-        def complete(self, payload, max_output_tokens, *, model):
+        def complete(self, request):
             raise TimeoutError("do not log secrets")
 
     state = run_agent(
@@ -253,7 +255,7 @@ def test_concurrent_graph_runs_respect_broker_limit(tools):
     started, release = threading.Event(), threading.Event()
 
     class Blocking(FakeProvider):
-        def complete(self, payload, max_output_tokens, *, model):
+        def complete(self, request):
             started.set()
             assert release.wait(3)
             return ProviderResult('{"kind":"shell"}', usage())

@@ -75,7 +75,7 @@ def test_preflight_cost_and_token_limits_block_before_provider():
 
 def test_usage_unknown_poison_and_timeout():
     class Timeout(FakeProvider):
-        def complete(self, payload, max_output_tokens, *, model):
+        def complete(self, request):
             raise TimeoutError("untrusted details")
 
     b = broker(Timeout([], 10), max_retries=2)
@@ -117,7 +117,7 @@ def test_concurrency_reservation_is_atomic():
     entered, release = threading.Event(), threading.Event()
 
     class Blocking(FakeProvider):
-        def complete(self, payload, max_output_tokens, *, model):
+        def complete(self, request):
             entered.set()
             assert release.wait(3)
             return result()
@@ -196,7 +196,7 @@ def test_parallel_reservations_cannot_exceed_cost_budget():
     entered, release = threading.Event(), threading.Event()
 
     class Blocking(FakeProvider):
-        def complete(self, payload, max_output_tokens, *, model):
+        def complete(self, request):
             entered.set()
             assert release.wait(3)
             return result()
@@ -229,7 +229,7 @@ def test_provider_exception_traceback_does_not_expose_details():
     import traceback
 
     class Leaky(FakeProvider):
-        def complete(self, payload, max_output_tokens, *, model):
+        def complete(self, request):
             raise TimeoutError("SECRET_PROVIDER_DETAILS")
 
     with pytest.raises(BrokerFailure) as caught:
@@ -253,7 +253,7 @@ def test_hung_provider_times_out_and_prevents_retries():
     entered, release = threading.Event(), threading.Event()
 
     class Hung(FakeProvider):
-        def complete(self, payload, max_output_tokens, *, model):
+        def complete(self, request):
             entered.set()
             release.wait(3)
             return result()
@@ -313,7 +313,8 @@ def test_unknown_usage_blocks_other_inflight_result():
     started = []
 
     class Parallel(FakeProvider):
-        def complete(self, payload, max_output_tokens, *, model):
+        def complete(self, request):
+            payload = request.payload()
             with lock:
                 started.append(payload["id"])
                 if len(started) == 2:
@@ -353,3 +354,57 @@ def test_expired_deadline_does_not_start_provider_work():
     invoked = []
     completed, result_value = _bounded_call(lambda: invoked.append(True), 0)
     assert not completed and result_value is None and not invoked
+
+
+def test_prepared_request_is_immutable_and_shared():
+    from dataclasses import FrozenInstanceError
+
+    class Inspect(FakeProvider):
+        def input_upper_bound(self, request):
+            self.counted = request
+            return super().input_upper_bound(request)
+
+        def complete(self, request):
+            assert request is self.counted
+            return super().complete(request)
+
+    provider = Inspect([result()], 10)
+    data = {"nested": {"value": 1}}
+    prepared = provider.prepare(data, model="test-model", max_output_tokens=20)
+    data["nested"]["value"] = 2
+    assert prepared.payload()["nested"]["value"] == 1
+    assert "nested" not in repr(prepared)
+    for key, value in (("model", "other"), ("payload_json", "{}"), ("max_output_tokens", 99)):
+        with pytest.raises(FrozenInstanceError):
+            setattr(prepared, key, value)
+    copy = prepared.payload()
+    copy["nested"]["value"] = 3
+    assert prepared.payload()["nested"]["value"] == 1
+    assert broker(provider).request({"nested": {"value": 1}}) == "{}"
+
+
+def test_retry_reuses_prepared_request():
+    class Inspect(FakeProvider):
+        def __init__(self):
+            super().__init__([result(error="retryable"), result()], 10)
+            self.prepared = []
+            self.seen = []
+
+        def prepare(self, payload, *, model, max_output_tokens):
+            request = super().prepare(payload, model=model, max_output_tokens=max_output_tokens)
+            self.prepared.append(request)
+            return request
+
+        def input_upper_bound(self, request):
+            self.seen.append(request)
+            return super().input_upper_bound(request)
+
+        def complete(self, request):
+            self.seen.append(request)
+            return super().complete(request)
+
+    provider = Inspect()
+    assert broker(provider, max_retries=1).request({}) == "{}"
+    assert len(provider.prepared) == 1
+    assert len(provider.seen) == 4
+    assert all(request is provider.prepared[0] for request in provider.seen)

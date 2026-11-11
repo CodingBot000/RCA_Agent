@@ -1,8 +1,9 @@
 """Offline broker contract and fail-closed accounting. No external provider is included."""
 
+import json
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from threading import BoundedSemaphore, Event, Lock, Thread
 from typing import Protocol
@@ -89,9 +90,38 @@ class ProviderResult:
     error: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedRequest:
+    model: str
+    payload_json: str = field(repr=False)
+    max_output_tokens: int
+
+    def __post_init__(self):
+        if not isinstance(self.model, str) or not self.model:
+            raise ValueError("model required")
+        if type(self.max_output_tokens) is not int or self.max_output_tokens < 1:
+            raise ValueError("positive output limit required")
+        if not isinstance(self.payload_json, str) or not isinstance(
+            json.loads(self.payload_json), dict
+        ):
+            raise TypeError("serialized object required")
+
+    @classmethod
+    def from_payload(cls, payload: dict, *, model: str, max_output_tokens: int):
+        return cls(
+            model,
+            json.dumps(payload, ensure_ascii=False, allow_nan=False, sort_keys=True),
+            max_output_tokens,
+        )
+
+    def payload(self) -> dict:
+        return json.loads(self.payload_json)
+
+
 class Provider(Protocol):
-    def input_upper_bound(self, payload: dict) -> int: ...
-    def complete(self, payload: dict, max_output_tokens: int, *, model: str) -> ProviderResult: ...
+    def prepare(self, payload: dict, *, model: str, max_output_tokens: int) -> PreparedRequest: ...
+    def input_upper_bound(self, request: PreparedRequest) -> int: ...
+    def complete(self, request: PreparedRequest) -> ProviderResult: ...
 
 
 class ModelBroker(Protocol):
@@ -178,6 +208,7 @@ class OfflineBroker:
             self._slots.release()
 
     def _request(self, payload: dict) -> str:
+        prepared = None
         for attempt in range(self.budget.max_retries + 1):
             with self._lock:
                 self._last_retryable = False
@@ -192,8 +223,25 @@ class OfflineBroker:
                 if self.active >= self.budget.max_concurrency:
                     self.failure = "concurrency_limit"
                     raise BrokerFailure("concurrency_limit")
+            if prepared is None:
+                finished, prepared = _bounded_call(
+                    lambda: self.provider.prepare(
+                        payload,
+                        model=self.model,
+                        max_output_tokens=self.budget.output_tokens_per_call,
+                    ),
+                    deadline - time.monotonic(),
+                )
+                if (
+                    not finished
+                    or not isinstance(prepared, PreparedRequest)
+                    or prepared.model != self.model
+                    or prepared.max_output_tokens != self.budget.output_tokens_per_call
+                ):
+                    self._fail("input_estimate_unavailable", block=True)
             finished, estimated = _bounded_call(
-                lambda: self.provider.input_upper_bound(payload), deadline - time.monotonic()
+                lambda prepared=prepared: self.provider.input_upper_bound(prepared),
+                deadline - time.monotonic(),
             )
             if (
                 not finished
@@ -236,7 +284,7 @@ class OfflineBroker:
                 self.reserved_output += output
                 self.reserved_cost += reserved_cost
             completed, result = _bounded_call(
-                lambda output=output: self.provider.complete(payload, output, model=self.model),
+                lambda prepared=prepared: self.provider.complete(prepared),
                 deadline - time.monotonic(),
             )
             if not completed or isinstance(result, BaseException):
@@ -336,9 +384,14 @@ class FakeProvider:
         self.input_bound = input_bound
         self.payloads: list[dict] = []
 
-    def input_upper_bound(self, payload: dict) -> int:
+    def prepare(self, payload, *, model, max_output_tokens):
+        return PreparedRequest.from_payload(
+            payload, model=model, max_output_tokens=max_output_tokens
+        )
+
+    def input_upper_bound(self, request: PreparedRequest) -> int:
         return self.input_bound
 
-    def complete(self, payload: dict, max_output_tokens: int, *, model: str) -> ProviderResult:
-        self.payloads.append(payload)
+    def complete(self, request: PreparedRequest) -> ProviderResult:
+        self.payloads.append(request.payload())
         return self.responses.pop(0)

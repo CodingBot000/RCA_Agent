@@ -299,11 +299,11 @@ def test_retry_attempts_are_charged_once_to_each_budget(monkeypatch):
             super().__init__(pricing)
             self.calls = 0
 
-        def complete(self, payload, max_output_tokens, *, model):
+        def complete(self, request):
             self.calls += 1
             if self.calls == 1:
                 return ProviderResult(None, Usage(1, 0, self.pricing.cost(1, 0)), "retryable")
-            return super().complete(payload, max_output_tokens, model=model)
+            return super().complete(request)
 
     monkeypatch.setattr(ipc_worker, "FixtureProvider", RetryFixture)
     price = Pricing(Decimal("0.01"), Decimal("0.01"))

@@ -158,6 +158,7 @@ class OfflineBroker:
         self.reserved_cost = Decimal(0)
         self.blocked = False
         self.failure = ""
+        self._last_retryable = False
 
     def _fail(self, reason: str, *, block: bool = False):
         with self._lock:
@@ -178,6 +179,8 @@ class OfflineBroker:
 
     def _request(self, payload: dict) -> str:
         for attempt in range(self.budget.max_retries + 1):
+            with self._lock:
+                self._last_retryable = False
             deadline = time.monotonic() + self.budget.timeout_seconds
             with self._lock:
                 if self.blocked:
@@ -291,6 +294,8 @@ class OfflineBroker:
             if reason:
                 raise BrokerFailure(reason)
             if result.error:
+                with self._lock:
+                    self._last_retryable = result.error == "retryable"
                 if result.error == "retryable" and attempt < self.budget.max_retries:
                     continue
                 self._fail("provider_error")

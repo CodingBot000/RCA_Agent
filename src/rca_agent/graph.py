@@ -12,6 +12,7 @@ from langgraph.graph import END, START, StateGraph
 from langsmith import tracing_context
 
 from rca_agent.contracts import RCAResult
+from rca_agent.model_broker import BrokerFailure
 from rca_agent.telemetry import TelemetryTools
 
 
@@ -159,6 +160,23 @@ def run_agent(
         or not isinstance(observation_limits, ObservationLimits)
     ):
         raise TypeError("TelemetryTools, Limits and ObservationLimits required")
+    budget_limits = getattr(reasoner, "execution_limits", None)
+    if callable(budget_limits):
+        allowed_calls, allowed_iterations = budget_limits()
+        if limits.max_tool_calls > allowed_calls or limits.max_iterations > allowed_iterations:
+            metadata = reasoner.public_summary()
+            metadata["failure"] = "execution_limit_mismatch"
+            return {
+                "history": [],
+                "hypotheses": [],
+                "calls": 0,
+                "iterations": 0,
+                "failure": "execution_limit_mismatch",
+                "result": None,
+                "evidence": [],
+                "failure_envelope": Failure("execution_limit_mismatch"),
+                "model_metadata": metadata,
+            }
     try:
         context = CaseContext.from_tools(tools)
     except (OSError, ValueError, KeyError):
@@ -171,6 +189,11 @@ def run_agent(
             "result": None,
             "evidence": [],
             "failure_envelope": Failure("case_context_error"),
+            "model_metadata": (
+                {**reasoner.public_summary(), "failure": "case_context_error"}
+                if callable(getattr(reasoner, "public_summary", None))
+                else None
+            ),
         }
     registry = tools.registry
     # Never allow evidence that pre-dates this run to authorize a result.
@@ -183,6 +206,8 @@ def run_agent(
         iteration = s["iterations"] + 1
         try:
             request = reasoner.investigate(tuple(deepcopy(s["history"])), context)
+        except BrokerFailure as exc:
+            return {"failure": exc.reason, "iterations": iteration}
         except Exception:  # noqa: BLE001 - reasoner/tool boundary returns a failure envelope
             return {"failure": "reasoner_error", "iterations": iteration}
         if request is None:
@@ -282,6 +307,8 @@ def run_agent(
             if not isinstance(h, list):
                 raise TypeError("invalid hypotheses")
             return {"hypotheses": h}
+        except BrokerFailure as exc:
+            return {"failure": exc.reason}
         except Exception:  # noqa: BLE001 - reasoner/tool boundary returns a failure envelope
             return {"failure": "reasoner_error"}
 
@@ -412,4 +439,28 @@ def run_agent(
         state = graph.compile().invoke(
             initial, config={"recursion_limit": 5 * limits.max_iterations + 10}
         )
-    return {**state, "failure_envelope": Failure(state["failure"]) if state["failure"] else None}
+    metadata = None
+    summary = getattr(reasoner, "public_summary", None)
+    if callable(summary):
+        raw_summary = summary()
+        metadata = {
+            k: raw_summary[k]
+            for k in (
+                "provider",
+                "model",
+                "code_version",
+                "calls",
+                "input_tokens",
+                "output_tokens",
+                "total_tokens",
+                "cost_usd",
+                "failure",
+            )
+        }
+        if state["failure"]:
+            metadata["failure"] = state["failure"]
+    return {
+        **state,
+        "failure_envelope": Failure(state["failure"]) if state["failure"] else None,
+        "model_metadata": metadata,
+    }

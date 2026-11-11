@@ -5,6 +5,7 @@ description = "Offline RCA agent contract and evaluation harness"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "langgraph==1.2.20",
+    "pydantic==2.14.3",
 ]
 
 [project.optional-dependencies]

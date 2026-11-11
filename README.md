@@ -106,3 +106,11 @@ PYTHONPATH="$PWD/src" /path/to/venv/bin/python scripts/verify_rcaeval_compat.py 
 `rca_agent.graph.run_agent`에 사례별 `TelemetryTools`, 교체 가능한 `Reasoner`, 실행자가 명시한 `Limits(max_tool_calls, max_iterations)`와 `ObservationLimits(max_records, max_chars)`를 전달한다. `ScriptedReasoner`는 테스트용 질의·가설을 실행하며 `$latest`를 현재 실행에서 성공한 최신 근거로 바꾼다. Phase 4A에서는 Reasoner가 CaseContext와 제한된 실제 Observation을 받고 가설에 실제 전달된 필드·값을 명시해야 한다. ScriptedReasoner는 명시적 claim의 `$latest`와 `$observed`를 치환한다. 관측값 일치는 인과관계를 증명하지 않는다. 실제 모델 사용이나 정확도 측정이 아니다. 반환값은 조사 이력·호출 횟수·가설·결과 또는 실패 envelope를 포함한다. 외부 tracing은 그래프 실행 중 비활성화된다.
 
 직접 `EvidenceRegistry.register(status="ok")`를 호출하는 기존 사용법은 거부된다. 실제 조회로 등록된 근거만 그래프에서 사용하며, 현재 실행에서 관측한 성공 호출과 별도로 대조한다. Python Reasoner는 신뢰된 in-process 코드여야 한다. 이 검사는 임의 Python에 대한 샌드박스가 아니므로 정답 격리 및 네트워크 차단은 별도의 실행 환경으로 강제한다. 실제 모델 평가에 필요한 호출·비용 정책은 미정이다.
+
+## Phase 4B-1: 오프라인 모델 인터페이스
+
+`LLMReasoner`는 `ModelBroker` protocol을 사용하며 기본 제공 구현은 외부 API를 호출하지 않는 `FakeProvider`와 `OfflineBroker`다. 공급자·모델·코드 버전, 가격 및 `Budget`의 모든 항목을 명시해야 한다. 그래프의 `Limits`는 broker의 도구 호출·반복 한도 이하여야 한다. 모델 출력은 엄격한 JSON 스키마, 허용 후보 및 Phase 4A 근거 검증을 통과해야 한다.
+
+입력 토큰 상한과 출력 예약량은 보수적인 신뢰된 계산을 전제한다. 예외·시간 초과로 사용량이 불명확하면 더 이상 호출하지 않는다. `OfflineBroker`의 타임아웃은 호출자에게 중단을 알리지만 Python 스레드 자체를 강제 종료하지 못한다. 동시에 실행되는 실제 요청이나 청구가 끝났다는 의미가 아니다. 동시 Agent 실행과 요청은 공유 broker 인스턴스에서 제한하지만, 예산도 그 인스턴스를 공유하는 실행에 누적된다. 실행별 독립 예산은 별도 인스턴스를 사용한다. 공유 프로세스 밖의 전역 예산 제한은 제공하지 않는다. 실제 외부 API 연결은 구현되어 있지 않으며, 독립된 OS 권한·네트워크 경계와 인증된 Broker, 제공자별 사용량·요금 및 취소 보장이 검증되기 전에는 연결하지 않는다.
+
+`run_agent`의 내부 상태에는 telemetry가 들어갈 수 있으므로 공개 로그로 직렬화하지 않는다. `rca_agent.public_report.public_run_report`는 모델·버전·호출·토큰·비용·실패 사유만 allowlist로 내보낸다. 사용한 식별자와 보관 정책도 공개 전 검토한다. 프롬프트 구분과 JSON Schema는 prompt injection의 완전한 방어가 아니다.

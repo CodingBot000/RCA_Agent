@@ -486,6 +486,7 @@ version = "0.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "langgraph" },
+    { name = "pydantic" },
 ]
 
 [package.optional-dependencies]
@@ -507,6 +508,7 @@ dev = [
 requires-dist = [
     { name = "langgraph", specifier = "==1.2.20" },
     { name = "pyarrow", marker = "extra == 'phase1'", specifier = ">=18,<23" },
+    { name = "pydantic", specifier = "==2.14.3" },
     { name = "rcaeval", marker = "extra == 'eval'", specifier = "==1.7.0" },
 ]
 provides-extras = ["eval", "phase1"]

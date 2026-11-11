@@ -9,3 +9,4 @@
 - BLOCKED: Linux 및 기타 OS에서 동등한 OS 격리·강제 종료는 구현·검증하지 않았으며 fail closed다. macOS 프로필은 일반 시스템 파일 접근을 허용하는 deny-list 방식이므로 임의 위치의 모든 자격 증명이나 악의적인 로컬 사용자에 대한 완전한 파일시스템 격리를 증명하지 않는다. 인증된 외부 API Broker, 실제 네트워크 allowlist, 실제 Provider 토큰·가격·취소 및 여러 Agent의 운영 환경은 미구현·미검증이다. 단일 세션 밖의 replay 영속성·재시작 후 중복 방지는 제공하지 않으며 상태가 불명확하면 수동 재조정이 필요하다. telemetry의 prompt injection과 공개 원본 지문 역추적 위험도 남는다.
 
 - 최종 로컬 검증: `UV_OFFLINE=1 make check` 및 `UV_OFFLINE=1 make harness-verify` 각각 144건 통과. 기존 121개 테스트를 유지했다. 금액을 포함한 사례별·전체 원장과 확인된 사용량의 재시도 회계를 합성 테스트로 확인했다.
+- GitHub CI: PR #12의 [push 실행](https://github.com/CodingBot000/RCA_Agent/actions/runs/43054594812)과 [PR 실행](https://github.com/CodingBot000/RCA_Agent/actions/runs/43054605590)이 성공했다. Linux에서는 비지원 플랫폼의 fail-closed 경로를 확인하며 macOS 격리 E2E가 실행된 것은 아니다. 이 기록을 추가한 후속 커밋에서도 필수 CI를 확인한다.

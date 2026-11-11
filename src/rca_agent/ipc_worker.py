@@ -23,6 +23,7 @@ from rca_agent.model_broker import (
     Budget,
     FakeProvider,
     OfflineBroker,
+    PreparedRequest,
     Pricing,
     ProviderResult,
     Usage,
@@ -58,7 +59,8 @@ class FixtureProvider(FakeProvider):
         super().__init__([], 1)
         self.pricing = pricing
 
-    def complete(self, payload, max_output_tokens, *, model):
+    def complete(self, request):
+        payload = request.payload()
         if payload["phase"] == "investigate":
             context = payload["context"]
             result = {
@@ -101,10 +103,16 @@ class SessionProvider:
         self.case_budget, self.max_cases, self.pricing = case_budget, max_cases, pricing
         self.cases = {}
 
-    def input_upper_bound(self, payload):
+    def prepare(self, payload, *, model, max_output_tokens):
+        return PreparedRequest.from_payload(
+            payload, model=model, max_output_tokens=max_output_tokens
+        )
+
+    def input_upper_bound(self, request):
         return 1
 
-    def complete(self, payload, max_output_tokens, *, model):
+    def complete(self, request):
+        payload = request.payload()
         case_id = payload["context"]["case_id"]
         if case_id not in self.cases:
             if len(self.cases) >= self.max_cases:

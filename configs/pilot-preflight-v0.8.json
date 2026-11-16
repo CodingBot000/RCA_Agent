@@ -1,0 +1,37 @@
+{
+  "purpose": "preflight-only",
+  "model": "gpt-6-luna",
+  "price_profile": "standard-global-conservative",
+  "case_and_total_budget": {
+    "max_calls": 8,
+    "max_tool_calls": 3,
+    "max_iterations": 3,
+    "max_input_tokens": 64000,
+    "max_output_tokens": 8000,
+    "max_total_tokens": 72000,
+    "max_cost_usd": "0.05",
+    "output_tokens_per_call": 1000,
+    "timeout_seconds": 30,
+    "max_concurrency": 1,
+    "max_retries": 0
+  },
+  "runtime": {
+    "http_timeout": 20,
+    "session_timeout": 300,
+    "dns_lease": 90,
+    "dns_refresh": 20,
+    "dns_timeout": 5,
+    "family_policy": "ipv4-only"
+  },
+  "observation_limits": {
+    "max_records": 5,
+    "max_chars": 12000
+  },
+  "retention": {
+    "journal_days_after_reconciliation": 90,
+    "artifact_days": 7,
+    "development_days": 14,
+    "delete_mode": "manual"
+  },
+  "public_reporting": "aggregate-only"
+}

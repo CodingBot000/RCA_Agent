@@ -202,3 +202,56 @@ def test_proxy_error_and_count_bodies_cannot_reflect_credentials():
     }
     with pytest.raises(ValueError):
         sanitize_upstream("count", 200, {"input_tokens": 10})
+
+
+@pytest.mark.parametrize("timeout", [20, 0.25])
+def test_explicit_http_timeout_reaches_socket_and_total_deadline(tmp_path, monkeypatch, timeout):
+    import socket
+
+    from rca_agent import egress_proxy as module
+
+    seen = {}
+    client, peer = socket.socketpair()
+
+    class Connection:
+        def __init__(self, *args):
+            self.timeout = 1  # PinnedTLS constructor default must not override operator settings.
+            self.sock = client
+
+        def request(self, *args, **kwargs):
+            seen["socket_timeout"] = self.timeout
+
+        def getresponse(self):
+            return self
+
+        status = 200
+
+        def read(self, maximum):
+            return b'{"object":"response.input_tokens","input_tokens":10}'
+
+        def close(self):
+            self.sock.close()
+
+    class Deadline:
+        def __init__(self, seconds, stop):
+            seen["total_deadline"] = seconds
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr(module, "PinnedTLS", Connection)
+    monkeypatch.setattr(module.threading, "Timer", Deadline)
+    proxy = module.EgressProxy.__new__(module.EgressProxy)
+    proxy.ip, proxy.port, proxy.context = "127.0.0.1", 8443, None
+    proxy.calls = proxy.models = 0
+    proxy.path = tmp_path / "audit.json"
+    proxy.forward_timeout = timeout
+    try:
+        assert proxy.forward("count", envelope("count"))["body"]["input_tokens"] == 10
+        assert seen == {"socket_timeout": timeout, "total_deadline": timeout}
+    finally:
+        client.close()
+        peer.close()

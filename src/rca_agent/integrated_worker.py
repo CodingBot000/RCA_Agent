@@ -80,12 +80,9 @@ class MockAPI:
         self.calls = 0
         self.model_calls = 0
 
-    def __call__(self, request):
-        validate_destination(str(request.url))
-        body = json.loads(request.content)
-        data = json.loads(body["input"])
+    def record(self, path):
         self.calls += 1
-        is_count = request.url.path.endswith("/input_tokens")
+        is_count = path.endswith("/input_tokens")
         if not is_count:
             self.model_calls += 1
         if self.audit_path:
@@ -94,6 +91,13 @@ class MockAPI:
                 json.dumps({"http_calls": self.calls, "model_calls": self.model_calls})
             )
             temporary.replace(self.audit_path)
+        return is_count
+
+    def __call__(self, request):
+        validate_destination(str(request.url))
+        body = json.loads(request.content)
+        data = json.loads(body["input"])
+        is_count = self.record(request.url.path)
         if is_count:
             if self.fault == "count_failure":
                 return httpx.Response(500, json={"error": {"message": "mock"}})
@@ -166,7 +170,33 @@ class MockAPI:
 def worker_handler(config):
     price = Pricing(Decimal("0.001"), Decimal("0.002"))
     api = MockAPI(config.get("fault", "none"), config.get("audit_path"))
-    provider = OpenAIProvider(transport=httpx.MockTransport(api), pricing=price)
+    transport = api
+    if config.get("egress"):
+        client_type = ReplayTestClient if config["egress"].get("replay") else ChannelClient
+        channel = client_type(
+            "/proxychannel/proxy.sock",
+            Credentials(config["egress"]["session"], bytes.fromhex(config["egress"]["key"])),
+            timeout=2,
+            server_uid=10005,
+            server_gid=10002,
+        )
+
+        def transport(request):
+            validate_destination(str(request.url))
+            operation = "count" if api.record(request.url.path) else "complete"
+            result = channel.request(
+                operation,
+                {
+                    "method": request.method,
+                    "url": str(request.url),
+                    "body": json.loads(request.content),
+                },
+            )
+            if type(result.get("status")) is not int or not 100 <= result["status"] <= 599:
+                raise ValueError("invalid proxy HTTP status")
+            return httpx.Response(result["status"], json=result["body"])
+
+    provider = OpenAIProvider(transport=httpx.MockTransport(transport), pricing=price)
     counted = set()
 
     def handle(operation, data):
@@ -242,7 +272,7 @@ def broker(config):
     client = client_type(
         "/channel/worker.sock",
         Credentials(config["session"], bytes.fromhex(config["key"])),
-        timeout=1,
+        timeout=3 if config.get("egress") else 1,
     )
     provider = SocketProvider(client, price)
     case_budget, total_budget = budget(config["case_budget"]), budget(config["total_budget"])
@@ -296,6 +326,10 @@ def broker(config):
                     "calls": ledger.summary()["calls"],
                     "channel_failure": client.failure,
                     "ledger_failure": ledger.failure,
+                    "settled_usage": {
+                        key: ledger.summary()[key]
+                        for key in ("input_tokens", "output_tokens", "total_tokens", "cost_usd")
+                    },
                 },
                 MAXIMUM,
             )

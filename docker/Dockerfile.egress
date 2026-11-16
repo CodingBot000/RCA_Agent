@@ -1,0 +1,4 @@
+FROM rca-offline:phase4b3b
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends iptables && rm -rf /var/lib/apt/lists/*
+USER 10005:10002

@@ -116,7 +116,7 @@ def stage_blind(destination, source=None, case_id=None):
     return case_id, context
 
 
-def validate_role(info, role, volume, blind):
+def validate_role(info, role, volume, blind, proxy_volume=None):
     uid = {"worker": "10001:10002", "broker": "10002:10002", "agent": "10003:10003"}[role]
     host = info["HostConfig"]
     mounts = info["Mounts"]
@@ -132,6 +132,16 @@ def validate_role(info, role, volume, blind):
         or "no-new-privileges" not in host["SecurityOpt"]
     ):
         raise ValueError("unsafe role configuration")
+    if role == "worker" and proxy_volume is not None:
+        extra = [m for m in mounts if m["Destination"] == "/proxychannel"]
+        if (
+            len(extra) != 1
+            or extra[0]["Type"] != "volume"
+            or extra[0]["Name"] != proxy_volume
+            or extra[0]["RW"]
+        ):
+            raise ValueError("unsafe Proxy channel mount")
+        mounts = [m for m in mounts if m["Destination"] != "/proxychannel"]
     if len(mounts) != 1:
         raise ValueError("unexpected mount")
     mount = mounts[0]
@@ -168,7 +178,8 @@ def safe_failure(message, fault):
     from rca_agent.public_report import SAFE_REASONS
 
     if (
-        set(message) != {"type", "reason", "calls", "channel_failure", "ledger_failure"}
+        set(message)
+        != {"type", "reason", "calls", "channel_failure", "ledger_failure", "settled_usage"}
         or message["type"] != "error"
         or message["reason"] != "broker_failed"
         or type(message["calls"]) is not int
@@ -178,6 +189,21 @@ def safe_failure(message, fault):
         or message["ledger_failure"] not in SAFE_REASONS
     ):
         raise IPCError("invalid failure status")
+    usage = message["settled_usage"]
+    if (
+        not isinstance(usage, dict)
+        or set(usage) != {"input_tokens", "output_tokens", "total_tokens", "cost_usd"}
+        or any(
+            type(usage[k]) is not int or usage[k] < 0
+            for k in ("input_tokens", "output_tokens", "total_tokens")
+        )
+        or usage["total_tokens"] != usage["input_tokens"] + usage["output_tokens"]
+    ):
+        raise IPCError("invalid settled usage")
+    cost = Decimal(usage["cost_usd"])
+    if not cost.is_finite() or cost < 0:
+        raise IPCError("invalid settled cost")
+    usage = {**usage, "cost_usd": str(cost)}
     return {
         "status": "EXPECTED_FAILURE" if fault != "none" else "BLOCKED",
         "fault": fault,
@@ -185,6 +211,11 @@ def safe_failure(message, fault):
         "calls": message["calls"],
         "channel_failure": message["channel_failure"],
         "ledger_failure": message["ledger_failure"],
+        "settled_usage": usage,
+        "usage_status": "UNAVAILABLE"
+        if message["ledger_failure"]
+        in {"usage_unavailable", "timeout_usage_unknown", "input_estimate_unavailable"}
+        else "CONFIRMED",
     }
 
 
@@ -197,7 +228,7 @@ def validate_audit(value):
         raise IPCError("invalid mock audit")
 
 
-def run_session(fault="none", blind_source=None, case_id=None):
+def run_session(fault="none", blind_source=None, case_id=None, *, extension=None):
     if fault not in {
         "none",
         "count_failure",
@@ -257,6 +288,8 @@ def run_session(fault="none", blind_source=None, case_id=None):
                 "fault": fault,
             }
             auth = {"session": secrets.token_hex(16), "key": secrets.token_hex(32)}
+            if extension is not None:
+                extension.start(private, b)
             endpoints = {}
             for role in ("worker", "broker", "agent"):
                 name = prefix + "-" + role
@@ -295,8 +328,19 @@ def run_session(fault="none", blind_source=None, case_id=None):
                         f"type=volume,src={volume},dst=/channel"
                         + (",readonly" if role == "broker" else ""),
                     ]
+                if role == "worker" and extension is not None:
+                    args += [
+                        "--mount",
+                        f"type=volume,src={extension.volume},dst=/proxychannel,readonly",
+                    ]
                 docker(*args, image, "python", "-B", "-m", "rca_agent.integrated_worker", role)
-                validate_role(json.loads(docker("inspect", name))[0], role, volume, blind)
+                validate_role(
+                    json.loads(docker("inspect", name))[0],
+                    role,
+                    volume,
+                    blind,
+                    extension.volume if extension is not None else None,
+                )
                 proc = subprocess.Popen(
                     ["docker", "start", "--attach", "--interactive", name],
                     stdin=subprocess.PIPE,
@@ -309,6 +353,8 @@ def run_session(fault="none", blind_source=None, case_id=None):
                 config = {**common, **(auth if role != "agent" else {})}
                 if role == "worker":
                     config["audit_path"] = "/channel/audit.json"
+                    if extension is not None:
+                        config["egress"] = extension.credentials
                 if fault == "bad_auth" and role == "broker":
                     config["key"] = "00" * 32
                 writer.write(config, 5)
@@ -423,6 +469,7 @@ print('wrong_uid_denied')
             )
             counters = ExecutionCounters(cfg)
             unique = transmitted = 0
+            last_metadata = None
             for _ in range(8):
                 message = ar.read(10)
                 if message.get("type") == "done":
@@ -443,6 +490,15 @@ print('wrong_uid_denied')
                         "unique_requests": unique,
                         "transmissions": transmitted,
                         "roles_isolated": True,
+                        "mode": "OFFLINE_MOCK",
+                        "settled_usage": {
+                            k: last_metadata[k]
+                            for k in ("input_tokens", "output_tokens", "total_tokens", "cost_usd")
+                        },
+                        "usage_status": "CONFIRMED",
+                        "pricing": "synthetic-test-only",
+                        "tool_calls": sum(counters.tool_calls.values()),
+                        "iterations": sum(counters.iterations.values()),
                     }
                     break
                 validate_request(message)
@@ -457,6 +513,7 @@ print('wrong_uid_denied')
                     result = safe_failure(response, fault)
                     break
                 validate_response(message, response, identity=IDENTITY)
+                last_metadata = response["metadata"]
                 if previous is not None and previous != response:
                     raise IPCError("replay mismatch")
                 if previous is None:
@@ -480,8 +537,10 @@ print('wrong_uid_denied')
                 validate_audit(audit)
                 result["mock_http_calls"] = audit["http_calls"]
                 result["mock_model_calls"] = audit["model_calls"]
-                if fault in ("none", "uds_replay") and (
-                    audit["model_calls"] != 2 or audit["http_calls"] != 4
+                if (
+                    result["status"] == "PASS"
+                    and fault in ("none", "uds_replay")
+                    and (audit["model_calls"] != 2 or audit["http_calls"] != 4)
                 ):
                     raise IPCError("mock/replay accounting failed")
                 if (

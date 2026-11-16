@@ -151,3 +151,17 @@ uv run --locked --no-sync python -m rca_agent.docker_integration --suite
 ```
 
 이미지가 현재 코드와 다르면 재빌드를 요구한다. 공개 결과에는 계수와 고정 상태만 출력하며 사례 키·telemetry·인증값은 출력하지 않는다. 실행 후 컨테이너와 임시 Volume을 제거한다. 실제 모델/외부 Worker는 `LIVE_BLOCKED`이며 활성화할 수 없다. [통합 진행 기록](docs/specs/phase4b3b-progress.md)에 실행 근거, 역사적 Probe 결과, 남은 외부 네트워크/TLS 조건 및 별도 승인이 필요한 첫 유료 1건 파일럿 준비 절차를 정리했다. Fake 결과는 RCA 정확도 평가가 아니다.
+
+
+## Phase 4B-3C 로컬 TLS Egress와 파일럿 준비
+
+Agent/Broker/Worker의 network none을 유지하고 Worker만 별도 인증 UDS로 Proxy에 요청한다. Proxy netns의 iptables는 로컬 TLS Mock IP/포트만 허용한다. hostname·경로·TLS·redirect 검사는 애플리케이션 계층에서 추가한다. 실제 OpenAI 목적지의 운영 allowlist는 검증되지 않아 LIVE_BLOCKED다.
+
+```sh
+# 명시적 수동 빌드: 잠금 패키지 및 승인된 iptables 설치
+uv run --locked --no-sync python scripts/build_offline_image.py --egress
+uv run --locked --no-sync python -m rca_agent.mock_egress --suite
+uv run --locked --no-sync python -m rca_agent.pilot --help
+```
+
+파일럿 CLI는 기본 dry-run으로 개발 manifest/평가셋 분리, 명시된 모든 한도와 가격 프로필을 검증한다. `--live`는 호출 없이 차단한다. 실제 유료 backend·자격 증명은 활성화하지 않았다. 보고서의 미실행 비용·정확도는 null이며 Fake 결과를 성능으로 표현하지 않는다. [3C 진행 기록](docs/specs/phase4b3c-progress.md)에 실제 Docker 근거, [공식 가격 확인](docs/specs/phase4b3c-pricing.md), 보고 schema 및 첫 개발용 1건의 기술적·사용자 결정 조건을 정리했다.

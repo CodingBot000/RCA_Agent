@@ -177,6 +177,12 @@ def test_untrusted_failure_summary_cannot_leak_telemetry(key):
         "calls": 0,
         "channel_failure": "",
         "ledger_failure": "",
+        "settled_usage": {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "cost_usd": "0",
+        },
     }
     message[key] = "private-telemetry-canary"
     with pytest.raises(IPCError):
@@ -194,3 +200,26 @@ def test_untrusted_audit_and_ready_are_rejected():
     with pytest.raises(IPCError):
         validate_ready({"type": "ready", "checks": {"private_unavailable": "yes"}})
     validate_audit({"http_calls": 4, "model_calls": 2})
+
+
+def test_valid_failure_preserves_known_usage_and_marks_unknown():
+    from rca_agent.docker_integration import safe_failure
+
+    message = {
+        "type": "error",
+        "reason": "broker_failed",
+        "calls": 1,
+        "channel_failure": "",
+        "ledger_failure": "provider_error",
+        "settled_usage": {
+            "input_tokens": 10,
+            "output_tokens": 50,
+            "total_tokens": 60,
+            "cost_usd": "0.110",
+        },
+    }
+    result = safe_failure(message, "none")
+    assert result["usage_status"] == "CONFIRMED" and result["settled_usage"]["cost_usd"] == "0.110"
+    message["ledger_failure"] = "usage_unavailable"
+    result = safe_failure(message, "unknown_usage")
+    assert result["usage_status"] == "UNAVAILABLE"

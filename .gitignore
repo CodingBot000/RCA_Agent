@@ -60,3 +60,7 @@ results.jsonl
 *.p12
 *.pfx
 *.log
+
+# Development inputs and private pilot artifacts
+development-data/
+pilot-private-results/

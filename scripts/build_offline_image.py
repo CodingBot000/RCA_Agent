@@ -1,5 +1,6 @@
 """Explicit manual dependency build; copies only locked requirements and Python source."""
 
+import argparse
 import hashlib
 import shutil
 import subprocess
@@ -18,6 +19,9 @@ def source_hash():
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--egress", action="store_true")
+    args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="rca-build-") as tmp:
         context = Path(tmp)
         subprocess.run(
@@ -57,6 +61,12 @@ def main():
             ],
             check=True,
         )
+    if args.egress:
+        with tempfile.TemporaryDirectory(prefix="rca-egress-build-") as tmp:
+            shutil.copy(ROOT / "docker/Dockerfile.egress", Path(tmp) / "Dockerfile")
+            subprocess.run(
+                ["docker", "build", "--pull=false", "-t", "rca-egress:mock", tmp], check=True
+            )
 
 
 if __name__ == "__main__":

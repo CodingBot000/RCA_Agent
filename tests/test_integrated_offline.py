@@ -130,3 +130,25 @@ def test_real_environment_key_is_not_used(monkeypatch):
     prepared = provider.prepare(payload(), model=IDENTITY[1], max_output_tokens=1000)
     assert provider.input_upper_bound(prepared) == 10
     assert headers == ["Bearer offline-test-key"]
+
+
+def test_known_provider_error_still_settles_usage():
+    ledger, channel = broker()
+    original = channel.handler
+
+    def handler(operation, data):
+        if operation == "complete":
+            return {
+                "content": None,
+                "input_tokens": 10,
+                "output_tokens": 50,
+                "cost_usd": "0.110",
+                "error": "provider_error",
+            }
+        return original(operation, data)
+
+    channel.handler = handler
+    with pytest.raises(BrokerFailure, match="provider_error"):
+        ledger.request(payload())
+    assert ledger.summary()["cost_usd"] == "0.110"
+    assert ledger.summary()["output_tokens"] == 50

@@ -118,7 +118,7 @@ class AuthenticatedSession:
             try:
                 result = self.handler(body["operation"], body["data"])
             except Exception:  # noqa: BLE001 - never disclose authenticated payloads
-                result = {"error": "worker_failure"}
+                result = {"channel_error": "worker_failure"}
             response = self.credentials.sign(
                 {
                     "session": self.credentials.session,
@@ -133,8 +133,9 @@ class AuthenticatedSession:
 
 
 class ChannelClient:
-    def __init__(self, path, credentials, timeout=3):
+    def __init__(self, path, credentials, timeout=3, *, server_uid=10001, server_gid=10002):
         self.path, self.credentials, self.timeout = path, credentials, timeout
+        self.server_identity = (server_uid, server_gid)
         self.sequence = 0
         self.lock = threading.Lock()
         self.blocked = False
@@ -161,7 +162,7 @@ class ChannelClient:
                     raise IPCError("response identity mismatch")
                 self.sequence += 1
                 self.failure = "worker_result"
-                if response["result"].get("error"):
+                if response["result"].get("channel_error"):
                     raise IPCError("worker failed")
                 self.failure = ""
                 return response["result"]
@@ -171,14 +172,14 @@ class ChannelClient:
 
     def _exchange(self, body):
         self.failure = "socket_path"
-        before = check_socket(self.path, 10001, 10002)
+        before = check_socket(self.path, *self.server_identity)
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
             conn.settimeout(self.timeout)
             conn.connect(self.path)
             self.failure = "peer_identity"
             if (
-                peer_identity(conn) != (10001, 10002)
-                or check_socket(self.path, 10001, 10002) != before
+                peer_identity(conn) != self.server_identity
+                or check_socket(self.path, *self.server_identity) != before
             ):
                 raise IPCError("worker identity changed")
             conn.sendall(encode_frame(self.credentials.sign(body, "request"), MAXIMUM))
@@ -186,7 +187,7 @@ class ChannelClient:
             return self.credentials.verify(read_frame(conn), "response")
 
 
-def serve(path, credentials, handler):
+def serve(path, credentials, handler, *, peer_uid=10002, peer_gid=10002):
     session = AuthenticatedSession(credentials, handler)
     os.umask(0o177)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
@@ -199,7 +200,7 @@ def serve(path, credentials, handler):
             with conn:
                 conn.settimeout(3)
                 try:
-                    if peer_identity(conn) != (10002, 10002):
+                    if peer_identity(conn) != (peer_uid, peer_gid):
                         raise IPCError("broker identity failed")
                     response = session.accept(read_frame(conn))
                     conn.sendall(encode_frame(response, MAXIMUM))

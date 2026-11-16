@@ -114,6 +114,8 @@ def plan(model, budget, profile):
         raise PilotError("BUDGET_REJECTED")
     settings = {
         **asdict(budget),
+        # JSON config can use 30 while argparse returns 30.0; bind their numeric meaning.
+        "timeout_seconds": float(budget.timeout_seconds),
         "max_cost_usd": str(budget.max_cost_usd),
         "model": model,
         "price_profile": profile,

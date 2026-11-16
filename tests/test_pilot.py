@@ -46,6 +46,14 @@ def test_plan_costs_and_requests_are_explicit():
         pilot.plan("gpt-6-luna", budget(max_cost_usd=Decimal(".00001")), pilot.PRICE_PROFILE)
 
 
+def test_settings_binding_matches_json_integer_and_cli_float_timeout():
+    integer = pilot.plan("gpt-6-luna", budget(timeout_seconds=30), pilot.PRICE_PROFILE)
+    parsed = pilot.plan("gpt-6-luna", budget(timeout_seconds=30.0), pilot.PRICE_PROFILE)
+    assert integer["settings_version"] == parsed["settings_version"]
+    changed = pilot.plan("gpt-6-luna", budget(timeout_seconds=31.0), pilot.PRICE_PROFILE)
+    assert changed["settings_version"] != parsed["settings_version"]
+
+
 @pytest.mark.parametrize(
     "changes",
     [

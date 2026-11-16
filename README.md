@@ -183,6 +183,6 @@ v0.8 최종 사전점검은 [선택 설정](configs/pilot-preflight-v0.8.json)�
 
 ## v0.9 사용자 직접 실행
 
-기본 `python -m rca_agent.local_pilot`은 키 없는 점검이다. `.venv/bin/python -m rca_agent.local_pilot --run`은 사용자가 Codex 밖의 독립 로컬 터미널에서만 실행한다. 전송·보존·예산·미검증 API/청구 조건을 읽고 최종 문구를 입력한 뒤 비에코 key 입력을 진행한다. 승인 전에는 API 요청이 없고, 실제 키는 일회용 pipe FD로 Proxy에만 전달한다. [실행 절차·검증·잔여 위험](docs/specs/pilot-v09-local-launcher.md)을 먼저 확인한다.
+기본 `python -m rca_agent.local_pilot`은 키 없는 점검이다. `.venv/bin/python -m rca_agent.local_pilot --run`은 사용자가 Codex 밖의 독립 로컬 터미널에서만 실행한다. 전송·보존·예산·미검증 API/청구 조건을 읽고 최종 문구를 입력한 뒤 저장소 루트 `.env`의 `OPENAI_API_KEY`를 읽는다. 키 재입력은 없다. 승인 전에는 키를 읽거나 API 요청을 하지 않고, 실제 키는 일회용 pipe FD로 Proxy에만 전달한다. [실행 절차·검증·잔여 위험](docs/specs/pilot-v09-local-launcher.md)과 [.env 키 로딩 계약](docs/specs/pilot-dotenv-key.md)을 먼저 확인한다. `.env`는 Git 제외·소유자 전용 0600이어야 하며 셸 실행·변수 확장·프로세스 환경변수 등록은 하지 않는다.
 
 실패/중단 후 명령을 반복하거나 private attempt/journal을 지워 새 요청으로 우회하지 않는다. `python -m rca_agent.local_pilot --status`로 동일 journal의 집계만 읽고 수동 확인한다. 이번 구현 작업에서는 실제 키·운영 승인·유료 요청을 사용하지 않았고 LIVE_BLOCKED를 유지했다.

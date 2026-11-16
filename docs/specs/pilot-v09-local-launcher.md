@@ -2,6 +2,8 @@
 
 기준선: PR #17, `aa9f99a62e5321064eccfa551fe8bcf151738e26`. 선택 설정은 기존 `configs/pilot-preflight-v0.8.json`을 그대로 사용한다. 코드·오프라인 검증·리뷰·PR은 이번 작업에서 완료하되 실제 키 입력·최종 유료 실행은 사용자의 독립된 로컬 터미널에서만 수행한다. Codex는 실제 key·활성 운영 승인 파일·유료 요청을 사용하지 않는다.
 
+후속 사용자 결정: 키 재입력을 제거하고 최종 승인 뒤 저장소 `.env`의 `OPENAI_API_KEY`를 사용한다. [변경 계약](pilot-dotenv-key.md)이 기존 비에코 입력 정책보다 우선한다. 최종 유료 실행 승인·기존 FD 경로·격리·Budget은 유지한다.
+
 ## 계약과 수락 기준
 
 - 기본 check는 main/원격 추적 ref/clean tree, 고정 설정, 개발 manifest/provenance·평가 20건 원본 독립성·세 신호·권한, image source hash, Budget을 확인하고 비공개 ID/해시/원문 없이 집계만 출력한다. 키·승인·journal을 생성하지 않는다.
@@ -9,7 +11,7 @@
 - 모델/비용/토큰/횟수/timeout, 전송 데이터와 provider 보존, 로컬 수동 보존, 실제 API 미검증·불명확 과금 위험, 계정 확인, 승인 유효기간 제안 1시간을 표시한다. 별도 최종 문구 입력 전에는 활성 승인·키 reader·child API 경로가 없다.
 - 승인 후 owner 0700 디렉터리/0600 파일을 O_EXCL/NOFOLLOW로 생성한다. 기존 `approval.approved_profile` 계약은 변경하지 않는다. code/settings/provenance/runtime/retention/expiry를 결합한다. 설정/코드/데이터가 입력 대기 중 바뀌면 차단한다.
 - owner lock 및 영속 attempt 기록으로 동시에 2회 또는 실패 후 자동 재실행하지 않는다. 단일 사례의 journal 이름과 결과 디렉터리를 재사용하며 기존 SENT/MANUAL_REVIEW는 물론 이전 운영 시도의 자동 후속 요청도 막는다. status는 같은 journal을 read-only로 검사한다.
-- 비에코 getpass는 echo fallback을 거부한다. 실제 key는 환경·인수·일반 파일에 기록하지 않고 메모리/일회용 pipe FD>=3으로만 직접 Python child에 전달한다. child stderr·비정상 stdout·예외 메시지를 공개 로그에 반사하지 않는다. core dump를 끄고 secret pipe/승인 파일을 종료 시 정리한다. 메모리·swap 완전 소거는 보장하지 않는다.
+- 승인 후 소유자 전용 `.env`만 검사해 키를 읽는다. 기존 사용자 관리 파일을 수정·복사하지 않으며 키를 프로세스 환경·인수·새 일반 파일에 기록하지 않고 메모리/일회용 pipe FD>=3으로만 직접 Python child에 전달한다. child stderr·비정상 stdout·예외 메시지를 공개 로그에 반사하지 않는다. core dump를 끄고 secret pipe/승인 파일을 종료 시 정리한다. 메모리·swap 완전 소거는 보장하지 않는다.
 - Proxy만 key를 사용하며 나머지 역할·격리·PreparedRequest·Budget·retries=0을 유지한다. 실제 요청 전에 durable journal, 사용량 불명확 시 MANUAL_REVIEW를 유지한다.
 
 ## 영향도와 테스트 설계
@@ -30,7 +32,7 @@
 2. DNS 5초·lease 90초·TLS 20초로 시스템 CA와 고정 호스트를 검증한다. 이 단계는 HTTP 0/키 0이며 account 인증 검증이 아니다.
 3. 선택한 모델·사례·최대 모델/count 8회씩·토큰·soft 비용 예산, timeout/DNS/관측, 외부 전송, provider 보존·cache, 로컬 수동 보존 및 승인 유효기간 제안 1시간을 표시한다. 계정 권한·global Standard 가격/부가 요금·잔액·data policy를 직접 확인하지 못했거나 가정과 다르면 승인하지 않는다.
 4. `동의하고 개발용 1건 유료 실행 승인`을 정확히 입력할 때만 활성 승인 파일을 만든다. 입력 대기 중 code/settings/provenance/이미지/manifest가 바뀌면 차단한다. 이 최종 문구는 1시간 유효기간·외부 전송·보존·키 사용·불명확 과금 위험을 포함한 별도 승인이다.
-5. 비에코 key 입력 후 한 번의 파일럿 child만 시작한다. key를 프롬프트/채팅/파일/env/CLI 값에 붙여넣지 않는다. `.env`는 읽지 않는다. stdout은 허용한 상태·계수·비용 추정치·신호 종류만 전달하고 실제 분석 결과/관측은 private artifact에 저장한다.
+5. 승인 후 저장소 루트 `.env`의 `OPENAI_API_KEY`를 읽고 한 번의 파일럿 child만 시작한다. 터미널 키 입력은 없다. 키를 프롬프트/채팅/프로세스 환경/CLI 값에 넣지 않는다. `.env`는 사용자 관리·Git 제외·owner UID/0600/단일 regular file이며 임의 경로·symlink·hardlink·FIFO는 거부한다. stdout은 허용한 상태·계수·비용 추정치·신호 종류만 전달하고 실제 분석 결과/관측은 private artifact에 저장한다.
 6. 완료·실패·취소 모두 활성 승인 파일을 제거한다. SIGKILL/호스트 종료로 남으면 유효기한이 지나도 자동 재개하지 않는다. 별도 child process session을 사용하고 timeout/interrupt 때 SIGINT로 정리하며 실패하면 종료한다. 원격 취소·환불은 보장하지 않는다.
 
 Private 저장 위치는 `pilot-private-results/local-pilot-v09`다. `attempt.json`에는 첫 시도의 code/data binding과 고정 journal 이름·출력 경로만, `outcome.json`에는 안전한 공개 계수만 저장한다. `artifacts/`에 model 결과·도구 이력·관측·실패 metadata가 저장된다. owner 디렉터리 0700/파일 0600이며 Git ignore 대상이다. API key는 일반 파일·journal에 기록하지 않는다. journal은 Docker disk volume으로 유지하며 자동 삭제하지 않는다.

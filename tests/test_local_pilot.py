@@ -75,7 +75,7 @@ def interactive(monkeypatch, prepared):
     monkeypatch.setattr(local, "require_terminal", lambda: None)
     monkeypatch.setattr(local, "run_probe", lambda *a, **kw: {"status": "PASS"})
     monkeypatch.setattr("builtins.input", lambda prompt: local.CONFIRM)
-    monkeypatch.setattr(local, "read_secret", lambda: bytearray(b"SYNTHETIC_CREDENTIAL_ONLY"))
+    monkeypatch.setattr(local, "read_secret", lambda root: bytearray(b"SYNTHETIC_CREDENTIAL_ONLY"))
 
 
 def test_prepare_is_no_key_no_approval_no_writes_and_binds_source_data(prepared):
@@ -111,7 +111,7 @@ def test_preparation_rejects_unsafe_configuration_and_origin(prepared, change):
 def test_refused_consent_cannot_create_approval_or_read_key(prepared, monkeypatch):
     interactive(monkeypatch, prepared)
     monkeypatch.setattr("builtins.input", lambda prompt: "no")
-    monkeypatch.setattr(local, "read_secret", lambda: pytest.fail("key reader called"))
+    monkeypatch.setattr(local, "read_secret", lambda root: pytest.fail("key reader called"))
     with pytest.raises(local.Blocked, match="LIVE_BLOCKED"):
         local.run(prepared)
     directory = prepared.root / local.STORAGE
@@ -131,6 +131,22 @@ def test_synthetic_terminal_approval_uses_existing_contract_and_claim_precedes_s
         assert approval.stat().st_mode & 0o777 == 0o600
         assert local.private_read(approval.parent / "attempt.json")["runtime"] == controls
         args = local.command(p, approval, controls, 7)
+        from rca_agent.model_broker import Budget
+        from rca_agent.pilot import CATALOG, parser, plan
+
+        parsed = parser().parse_args(args[3:])
+        cli_budget = Budget(**{k: getattr(parsed, k) for k in Budget.__dataclass_fields__})
+        cli_plan = plan(parsed.model, cli_budget, parsed.price_profile)
+        assert cli_plan["settings_version"] == p.plan["settings_version"]
+        local.approved_profile(
+            approval,
+            cli_plan,
+            cli_budget,
+            p.root / "development-data/pilot-v1/private/provenance.json",
+            local.source_hash(),
+            controls,
+            catalog=CATALOG,
+        )
         assert "SYNTHETIC_CREDENTIAL_ONLY" not in " ".join(args)
         assert "--credential-fd" in args and args[-1] == "--live"
         assert bytes(raw) == b"SYNTHETIC_CREDENTIAL_ONLY"
@@ -145,6 +161,33 @@ def test_synthetic_terminal_approval_uses_existing_contract_and_claim_precedes_s
     with pytest.raises(local.Blocked, match="EXISTING_ATTEMPT"):
         local.run(prepared)
     assert len(seen) == 1
+
+
+def test_dotenv_is_read_only_after_valid_final_approval(prepared, monkeypatch, capsys):
+    reader = local.read_secret
+    path = prepared.root / ".env"
+    data = b"OPENAI_API_KEY=SYNTHETIC_DOTENV_CREDENTIAL\n"
+    path.write_bytes(data)
+    path.chmod(0o600)
+    interactive(monkeypatch, prepared)
+    reads = []
+
+    def approved_read(root):
+        assert root == prepared.root
+        approval = root / local.STORAGE / "approval.json"
+        assert local.private_read(approval)["approved"] is True
+        reads.append(root)
+        return reader(root)
+
+    def fake_child(p, approval, controls, raw):
+        assert raw == bytearray(b"SYNTHETIC_DOTENV_CREDENTIAL")
+        return {"status": "ANALYSIS_SUCCEEDED", "billing_status": "UNRECONCILED"}
+
+    monkeypatch.setattr(local, "read_secret", approved_read)
+    monkeypatch.setattr(local, "invoke", fake_child)
+    assert local.run(prepared)["status"] == "ANALYSIS_SUCCEEDED"
+    assert reads == [prepared.root] and path.read_bytes() == data
+    assert "SYNTHETIC_DOTENV_CREDENTIAL" not in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
@@ -165,13 +208,13 @@ def test_failure_has_no_automatic_new_journal_or_second_invocation(prepared, mon
         monkeypatch.setattr("builtins.input", lambda prompt: changed() or local.CONFIRM)
     elif failure == "changed_after_key":
         monkeypatch.setattr(
-            local, "read_secret", lambda: changed() or bytearray(b"SYNTHETIC_CREDENTIAL_ONLY")
+            local, "read_secret", lambda root: changed() or bytearray(b"SYNTHETIC_CREDENTIAL_ONLY")
         )
     elif failure == "key_error":
         monkeypatch.setattr(
             local,
             "read_secret",
-            lambda: (_ for _ in ()).throw(RuntimeError("SYNTHETIC_SECRET_NEVER_PRINT")),
+            lambda root: (_ for _ in ()).throw(RuntimeError("SYNTHETIC_SECRET_NEVER_PRINT")),
         )
 
     def child(*args):
@@ -266,14 +309,10 @@ def test_owner_lock_blocks_concurrent_launch_and_symlinks(tmp_path):
         local.private_read(link)
 
 
-def test_getpass_echo_fallback_never_reads_key(monkeypatch):
-    def fallback(*args):
-        local.warnings.warn("echo would be enabled", local.getpass.GetPassWarning)
-        pytest.fail("echo fallback reached")
-
-    monkeypatch.setattr(local.getpass, "getpass", fallback)
-    with pytest.raises(local.getpass.GetPassWarning):
-        local.read_secret()
+def test_missing_dotenv_never_falls_back_to_process_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "SYNTHETIC_ENV_MUST_NOT_BE_READ")
+    with pytest.raises(local.Blocked, match="ENV_FILE_MISSING"):
+        local.read_secret(tmp_path)
 
 
 @pytest.mark.parametrize("raw", [b"SYNTHETIC_CREDENTIAL_ONLY", b"", b"bad\nvalue", b"x" * 4097])
@@ -432,3 +471,21 @@ def test_status_reads_same_volume_readonly_and_never_creates_one(prepared, monke
     assert "LIVE_BLOCKED" in json.dumps(result) and "rca-pilot-journal-unit" not in json.dumps(
         result
     )
+
+
+def test_missing_recorded_journal_is_explicit_manual_review(prepared, monkeypatch):
+    base = prepared.root / "pilot-private-results"
+    local.private_directory(base)
+    directory = prepared.root / local.STORAGE
+    local.private_directory(directory)
+    local.private_create(
+        directory / "attempt.json", {"runtime": {"journal_volume": "rca-pilot-journal-unit"}}
+    )
+
+    def unavailable(args, **kwargs):
+        raise local.subprocess.CalledProcessError(1, args)
+
+    monkeypatch.setattr(local.subprocess, "check_output", unavailable)
+    with pytest.raises(local.Blocked, match="JOURNAL_UNAVAILABLE_MANUAL_REVIEW"):
+        local.status(prepared.root)
+    assert (directory / "attempt.json").exists()

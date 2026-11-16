@@ -1,17 +1,16 @@
 """Human-terminal-only single pilot launcher. Default check never creates approval or reads keys."""
 
 import fcntl
-import getpass
 import hashlib
 import json
 import os
+import re
 import resource
 import stat
 import subprocess
 import sys
 import time
 import uuid
-import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -255,6 +254,7 @@ def notice(prepared):
         "실제 인증/schema/count/usage/청구는 미검증입니다. 실패·미확인 과금은 자동 재시도하지 않습니다.\n"
         "계정 모델 접근·잔액·global Standard 가격/부가 요금·데이터 정책을 확인했고, 가정이 다르면 실행을 취소하십시오.\n"
         "승인 유효기간은 생성 후 1시간입니다. 로컬 보존/수동 삭제와 외부 전송·유료 실행·키 사용에 동의할 때만 아래 문구를 직접 입력하십시오.\n"
+        "승인 후 저장소 .env의 OPENAI_API_KEY를 읽습니다. 키를 다시 입력하지 않으며 환경변수로 등록하지 않습니다.\n"
         "Codex/기록되는 터미널이 아닌 사용자 독립 터미널에서 실행 중임을 확인하십시오."
     )
 
@@ -323,16 +323,70 @@ def command(prepared, approval, controls, fd):
     return args + ["--live"]
 
 
-def read_secret():
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", getpass.GetPassWarning)
-        value = getpass.getpass("OpenAI API key (비에코, 저장하지 않음): ")
-    raw = bytearray(value.encode("ascii"))
-    del value
-    if not 1 <= len(raw) <= 4096 or any(c < 33 or c > 126 for c in raw):
-        raw[:] = b"\0" * len(raw)
-        raise Blocked("INVALID_CREDENTIAL_FORMAT")
-    return raw
+def dotenv_secret(data):
+    """Literal scalar only: never source, interpolate, execute, or populate os.environ."""
+    value = None
+    for line in data.decode("utf-8-sig").splitlines():
+        entry = line.strip()
+        if entry.startswith(("export ", "export\t")):
+            entry = entry[6:].lstrip()
+        name, separator, scalar = entry.partition("=")
+        if name.strip() != "OPENAI_API_KEY":
+            continue
+        if value is not None:
+            raise Blocked("ENV_KEY_DUPLICATE")
+        match = re.fullmatch(
+            r"""(?:'([^'\r\n]*)'|"([^"\r\n]*)"|([^\s'\"]+))(?:[ \t]+#[^\r\n]*)?""", scalar.strip()
+        )
+        if not separator or match is None:
+            raise Blocked("ENV_KEY_INVALID")
+        value = next(part for part in match.groups() if part is not None)
+    if value is None:
+        raise Blocked("ENV_KEY_MISSING")
+    if not 1 <= len(value) <= 4096 or any(ord(c) < 33 or ord(c) > 126 for c in value):
+        raise Blocked("ENV_KEY_INVALID")
+    return bytearray(value, "ascii")
+
+
+def read_secret(root):
+    """Read only the operator-owned .env, and only after final terminal consent."""
+    try:
+        fd = os.open(Path(root) / ".env", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        raise Blocked("ENV_FILE_MISSING") from None
+    except OSError:
+        raise Blocked("ENV_FILE_UNSAFE") from None
+    data = bytearray()
+    try:
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.getuid()
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_size > 65536
+        ):
+            raise Blocked("ENV_FILE_UNSAFE")
+        data.extend(os.read(fd, 65537))
+        after = os.fstat(fd)
+        if (
+            len(data) != info.st_size
+            or len(data) > 65536
+            or (info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            != (
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            )
+        ):
+            raise Blocked("ENV_FILE_UNSAFE")
+        try:
+            return dotenv_secret(data)
+        except UnicodeError:
+            raise Blocked("ENV_KEY_INVALID") from None
+    finally:
+        data[:] = b"\0" * len(data)
+        os.close(fd)
 
 
 def invoke(prepared, approval, controls, raw):
@@ -481,7 +535,7 @@ def run(prepared):
                 controls,
                 catalog=CATALOG,
             )
-            raw = read_secret()
+            raw = read_secret(prepared.root)
             if prepare(prepared.root).binding != prepared.binding:
                 raise Blocked("INPUT_CHANGED")
             result = invoke(prepared, approval, controls, raw)
@@ -516,9 +570,14 @@ def status(root=ROOT):
         or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789-" for c in volume)
     ):
         raise Blocked("PRIVATE_STORAGE_UNSAFE")
-    info = json.loads(
-        subprocess.check_output(["docker", "volume", "inspect", volume], stderr=subprocess.DEVNULL)
-    )[0]
+    try:
+        info = json.loads(
+            subprocess.check_output(
+                ["docker", "volume", "inspect", volume], stderr=subprocess.DEVNULL
+            )
+        )[0]
+    except (subprocess.SubprocessError, OSError):
+        raise Blocked("JOURNAL_UNAVAILABLE_MANUAL_REVIEW") from None
     if info.get("Labels", {}).get("rca.pilot.journal") != "v1":
         raise Blocked("JOURNAL_UNAVAILABLE_MANUAL_REVIEW")
     code = "import json;from rca_agent.request_journal import readonly_summary;print(json.dumps(readonly_summary('/journal/requests.sqlite')))"
@@ -574,7 +633,7 @@ def main():
     modes.add_argument(
         "--run",
         action="store_true",
-        help="human local terminal only; final consent and non-echo key entry",
+        help="human local terminal only; final consent then load key from repository .env",
     )
     modes.add_argument(
         "--status", action="store_true", help="read existing private journal; never retry"
@@ -624,6 +683,11 @@ def main():
             "MANUAL_REVIEW_REQUIRED",
             "JOURNAL_UNAVAILABLE_MANUAL_REVIEW",
             "LOCAL_DOCKER_REQUIRED",
+            "ENV_FILE_MISSING",
+            "ENV_FILE_UNSAFE",
+            "ENV_KEY_MISSING",
+            "ENV_KEY_INVALID",
+            "ENV_KEY_DUPLICATE",
         }
         reason = (
             str(exc)

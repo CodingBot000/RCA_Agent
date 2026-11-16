@@ -1,0 +1,8 @@
+FROM python:3.12.13-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 OPENBLAS_NUM_THREADS=1
+COPY requirements.txt /tmp/requirements.txt
+RUN python -m pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt && rm /tmp/requirements.txt
+COPY rca_agent /opt/rca_agent
+ENV PYTHONPATH=/opt
+USER 10002:10002
+WORKDIR /

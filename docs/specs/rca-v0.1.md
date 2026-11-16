@@ -119,6 +119,20 @@ Provider는 모델, JSON 직렬화 payload, 출력 토큰 상한을 담은 불�
 
 OpenAI Mock Provider는 동일한 PreparedRequest로 SDK 토큰 계산 요청과 모델 요청의 모델·지침·입력·출력 스키마·도구를 구성한다. 토큰 계산에 없는 저장 및 출력 한도는 모델 요청에만 전달한다. 계산 결과와 최대 출력 토큰을 기존 Budget에 예약하며 계산 실패나 한도 초과 시 모델 요청을 보내지 않는다. 실제 토큰 계산 API의 정확성과 모델의 스키마 수용은 미검증이다.
 
+## Phase 4B-3B-1 Docker 격리 계약
+
+통합 오프라인 실행은 Agent/Broker/Worker 모두 network none을 유지한다. Worker UID10001, Broker UID10002, 공유 GID10002의 UDS를 사용한다. 디렉터리는 Worker 소유 0750, 소켓은 0660이며 Broker에는 Volume을 읽기 전용으로 마운트한다. SO_PEERCRED와 소유권·inode·symlink 검사를 수행하고 세션별 HMAC 인증·요청 ID/순번·응답 인증을 추가한다. 인증값은 호스트가 익명 stdin으로만 전달하며 Agent·CLI·환경·Volume에 저장하지 않는다. 동일 요청 재전송은 세션 내 캐시하고 내용이 다른 ID 재사용은 거부한다. 외부 송신 기능은 구현하지 않고 LIVE_BLOCKED를 반환한다. 테스트용 예산은 운영 정책으로 간주하지 않는다.
+
+Unix Socket 후속 검사는 Broker·Worker·Agent 모두 network none으로 실행한다. Broker와 Worker만 권한 0700/UID 65534의 임시 tmpfs Docker Volume을 공유하고 Worker 소켓은 0600으로 제한한다. Agent에는 해당 Volume이나 blind·평가자·키를 마운트하지 않는다. 제한된 HTTP/Unix Socket 합성 요청만 사용하며 메시지·헤더 크기, JSON 구조와 timeout을 검증한다. 정답·mapping·blind·키 미마운트와 TCP 실패를 실제로 확인한다. 외부 Worker, 실제 Provider 연결 및 전체 실모델 보안 PASS는 범위 밖이다. 모든 컨테이너·Volume·보조 네트워크를 정리한다.
+
+후속 Gateway 검사는 internal과 isolated gateway 모드를 함께 적용하고 inspect로 옵션을 확인한다. Engine host 네트워크의 합성 수신 서비스에 정상 internal 네트워크의 대조군이 연결할 수 있는지 확인한 뒤 isolated Broker에서 Gateway·host-gateway·외부 IPv4/IPv6 경로를 검사한다. DNS 실패·timeout·connection refused를 차단 성공으로 판정하지 않는다. 동등 네트워크의 비허용 포트 제한은 구현하지 않으며 BLOCKED를 유지한다. 모든 실험 자원은 종료 시 제거한다.
+
+Phase 4B-3B-1A는 Broker와 합성 Mock 서버를 하나의 Docker internal 네트워크에만 연결하는 테스트 전용 Probe다. OpenAIProvider와 기존 IPC는 변경하지 않는다. non-root/read-only/cap-drop/no-new-privileges, 빈 마운트 목록과 단일 internal 네트워크를 inspect 및 컨테이너 내부에서 확인한다. 합성 평가자 파일은 호스트에만 생성해 미마운트를 검증한다. 외부 IP, 네트워크 게이트웨이, host.docker.internal 및 허용되지 않은 포트에 대한 연결 결과를 기록한다. 연결 성공 또는 connection refused는 경로가 존재함을 뜻하며 BLOCKED다. timeout·DNS 실패는 OS 차단의 증거가 아니므로 미검증/BLOCKED다. 범위 밖인 Proxy와 IPC E2E는 구현하지 않는다.
+
+실제 API와 키 없이 합성 사례만 사용한다. Agent는 network none과 읽기 전용 blind 마운트를 사용하고, Broker는 별도 internal 네트워크만 사용하며 blind·평가자 데이터·비밀을 마운트하지 않는다. Agent·Broker는 기존 stdin/stdout IPC와 Fake Provider를 사용한다. Proxy는 Broker가 접근하는 유일한 egress 경계로 분리하고, Mock 시험을 통과하기 전에는 실제 외부 통신을 허용하지 않는다. 향후 `api.openai.com:443` 이외 목적지, 리다이렉트 및 우회 경로의 거부는 별도 강제와 음성 검증이 필요하다.
+
+컨테이너는 비루트, 읽기 전용 루트 파일시스템, 모든 capability 제거 및 Docker 소켓 미마운트를 사용한다. 명시적 시간 제한과 Budget 실패 시 전체 세션을 강제 종료하고 잔여 컨테이너가 없음을 확인한다. 네트워크·파일 접근 거부와 IPC/Mock E2E는 실제 Docker 환경에서 검증하며 미실행 또는 실패 시 BLOCKED다. 애플리케이션의 목적지 검사는 OS 네트워크 격리를 대신하지 않는다. 기존 macOS 하네스는 유지한다.
+
 공식 SDK와 주입된 HTTP transport로 Responses 요청을 구성하며 자동 재시도를 끈다. 오프라인 시험만 허용하고 실제 Broker 연결은 구현하지 않는다. 요청은 고정 HTTPS API 호스트와 Responses 경로만 사용하고 리디렉션과 환경 프록시를 거부한다. 이는 코드 수준 검증이며 OS 네트워크 격리가 아니다. API 키는 테스트에서 합성 값만 사용한다.
 
 Strict Structured Outputs는 모델 응답 형식의 일부만 강제한다. SDK가 생성한 스키마를 사용하며 기존 Pydantic 및 IPC 검증을 추가로 적용한다. 스키마의 API 지원 여부는 별도로 검증해야 한다. 요청 실패 또는 사용량 누락은 비용이 불명확하므로 재시도 없이 차단한다. 완료 응답이라도 거부·불완전 응답과 잘못된 사용량은 실패한다. 입력 토큰의 보수적 상한과 가격은 호출자가 명시해야 하며 운영 승인 값으로 간주하지 않는다. 입력 추정의 정확성, 실제 요금과 네트워크·파일 권한 격리는 4B-3B의 진입 조건이다.

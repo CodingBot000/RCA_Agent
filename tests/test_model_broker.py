@@ -408,3 +408,11 @@ def test_retry_reuses_prepared_request():
     assert len(provider.prepared) == 1
     assert len(provider.seen) == 4
     assert all(request is provider.prepared[0] for request in provider.seen)
+
+
+@pytest.mark.parametrize("text", ['{"x":1,"x":2}', '{"x":NaN}', '{"x":{"n":1,"n":2}}'])
+def test_prepared_request_rejects_ambiguous_json(text):
+    from rca_agent.model_broker import PreparedRequest
+
+    with pytest.raises(ValueError):
+        PreparedRequest("test", text, 1)

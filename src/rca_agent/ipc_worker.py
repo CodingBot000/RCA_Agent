@@ -99,8 +99,20 @@ class FixtureProvider(FakeProvider):
 class SessionProvider:
     """Nest a per-case ledger under the evaluation-wide ledger."""
 
-    def __init__(self, case_budget, max_cases, pricing):
+    def __init__(
+        self,
+        case_budget,
+        max_cases,
+        pricing,
+        *,
+        provider=None,
+        provider_name="fake",
+        model="ipc-fixture",
+        code_version="ipc-test",
+    ):
         self.case_budget, self.max_cases, self.pricing = case_budget, max_cases, pricing
+        self.provider = provider if provider is not None else FixtureProvider(pricing)
+        self.identity = (provider_name, model, code_version)
         self.cases = {}
 
     def prepare(self, payload, *, model, max_output_tokens):
@@ -109,7 +121,7 @@ class SessionProvider:
         )
 
     def input_upper_bound(self, request):
-        return 1
+        return self.provider.input_upper_bound(request)
 
     def complete(self, request):
         payload = request.payload()
@@ -118,10 +130,10 @@ class SessionProvider:
             if len(self.cases) >= self.max_cases:
                 raise IPCError("case limit exhausted")
             self.cases[case_id] = OfflineBroker(
-                FixtureProvider(self.pricing),
-                provider_name="fake",
-                model="ipc-fixture",
-                code_version="ipc-test",
+                self.provider,
+                provider_name=self.identity[0],
+                model=self.identity[1],
+                code_version=self.identity[2],
                 budget=replace(self.case_budget, max_retries=0),
                 pricing=self.pricing,
             )

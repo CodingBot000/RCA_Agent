@@ -90,6 +90,24 @@ class ProviderResult:
     error: str | None = None
 
 
+def _prepared_payload(text):
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("duplicate prepared key")
+            result[key] = value
+        return result
+
+    def constant(_):
+        raise ValueError("invalid prepared constant")
+
+    value = json.loads(text, object_pairs_hook=pairs, parse_constant=constant)
+    if not isinstance(value, dict):
+        raise TypeError("prepared object required")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedRequest:
     model: str
@@ -102,7 +120,7 @@ class PreparedRequest:
         if type(self.max_output_tokens) is not int or self.max_output_tokens < 1:
             raise ValueError("positive output limit required")
         if not isinstance(self.payload_json, str) or not isinstance(
-            json.loads(self.payload_json), dict
+            _prepared_payload(self.payload_json), dict
         ):
             raise TypeError("serialized object required")
 
@@ -115,7 +133,7 @@ class PreparedRequest:
         )
 
     def payload(self) -> dict:
-        return json.loads(self.payload_json)
+        return _prepared_payload(self.payload_json)
 
 
 class Provider(Protocol):

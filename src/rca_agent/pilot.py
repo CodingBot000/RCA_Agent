@@ -10,7 +10,6 @@ from decimal import Decimal
 from pathlib import Path
 
 from rca_agent.contracts import RCAInput
-from rca_agent.egress_policy import live_client
 from rca_agent.llm_reasoner import MODEL_INSTRUCTION
 from rca_agent.model_broker import Budget
 from rca_agent.phase1 import CASE_ID_PATTERN
@@ -37,7 +36,15 @@ class SafeParser(argparse.ArgumentParser):
         raise PilotError("INVALID_CONFIGURATION")
 
 
-def development_case(root, case, manifest, evaluation_root=EVALUATION_ROOT):
+def development_case(
+    root,
+    case,
+    manifest,
+    evaluation_root=EVALUATION_ROOT,
+    *,
+    provenance=None,
+    evaluation_mapping=None,
+):
     root, case, manifest = Path(root), Path(case), Path(manifest)
     if case.is_symlink() or manifest.is_symlink():
         raise PilotError("CASE_SPLIT_BLOCKED")
@@ -74,6 +81,12 @@ def development_case(root, case, manifest, evaluation_root=EVALUATION_ROOT):
         metrics = case / "metrics.csv"
     if metrics.is_symlink() or not metrics.is_file() or metrics.stat().st_nlink != 1:
         raise PilotError("CASE_SPLIT_BLOCKED")
+    if provenance is not None or evaluation_mapping is not None:
+        if provenance is None or evaluation_mapping is None:
+            raise PilotError("CASE_SPLIT_BLOCKED")
+        from rca_agent.development import verify_provenance
+
+        verify_provenance(case, provenance, evaluation_mapping)
     return task
 
 
@@ -81,7 +94,8 @@ def plan(model, budget, profile):
     if model not in CATALOG or profile != PRICE_PROFILE:
         raise PilotError("MODEL_OR_PRICE_UNVERIFIED")
     if (
-        budget.max_concurrency != 1
+        budget.max_calls > 8
+        or budget.max_concurrency != 1
         or budget.max_retries != 0
         or budget.output_tokens_per_call > 128000
         or budget.max_input_tokens > 922000 * budget.max_calls
@@ -217,6 +231,18 @@ def parser():
     p.add_argument("--max-cost-usd", type=Decimal, required=True)
     p.add_argument("--timeout-seconds", type=float, required=True)
     p.add_argument("--experiment-id")
+    p.add_argument("--provenance-file", type=Path)
+    p.add_argument("--evaluation-mapping", type=Path)
+    p.add_argument("--approval-file", type=Path)
+    p.add_argument("--credential-fd", type=int)
+    p.add_argument("--journal-volume")
+    p.add_argument("--dns-lease-seconds", type=int)
+    p.add_argument("--dns-refresh-seconds", type=int)
+    p.add_argument("--dns-timeout-seconds", type=float)
+    p.add_argument("--http-timeout-seconds", type=float)
+    p.add_argument("--session-timeout-seconds", type=float)
+    p.add_argument("--address-family-policy", choices=["ipv4-only", "dual-stack"])
+    p.add_argument("--private-output", type=Path)
     p.add_argument("--live", action="store_true")
     return p
 
@@ -229,13 +255,109 @@ def main():
         values = {key: getattr(args, key) for key in Budget.__dataclass_fields__}
         b = Budget(**values)
         plan_data = plan(args.model, b, args.price_profile)
-        development_case(args.development_root, args.case_directory, args.development_manifest)
+        task = (
+            development_case(
+                args.development_root,
+                args.case_directory,
+                args.development_manifest,
+                provenance=args.provenance_file,
+                evaluation_mapping=args.evaluation_mapping,
+            )
+            if args.provenance_file or args.evaluation_mapping
+            else development_case(
+                args.development_root, args.case_directory, args.development_manifest
+            )
+        )
+        if args.provenance_file:
+            plan_data["original_case_disjoint"] = True
+        else:
+            plan_data["original_case_disjoint"] = "UNVERIFIED"
         if args.live:
-            try:
-                live_client()
+            required = (
+                args.provenance_file,
+                args.evaluation_mapping,
+                args.approval_file,
+                args.credential_fd,
+                args.journal_volume,
+                args.dns_lease_seconds,
+                args.dns_refresh_seconds,
+                args.dns_timeout_seconds,
+                args.http_timeout_seconds,
+                args.session_timeout_seconds,
+                args.address_family_policy,
+                args.private_output,
+            )
+            if any(value is None for value in required):
                 raise PilotError("LIVE_BLOCKED")
-            except RuntimeError:
-                raise PilotError("LIVE_BLOCKED") from None
+            from rca_agent.approval import approved_profile
+            from rca_agent.docker_integration import run_session, source_hash
+            from rca_agent.live_deployment import LiveDeployment
+
+            controls = {
+                "journal_volume": args.journal_volume,
+                "dns_lease": args.dns_lease_seconds,
+                "dns_refresh": args.dns_refresh_seconds,
+                "dns_timeout": args.dns_timeout_seconds,
+                "http_timeout": args.http_timeout_seconds,
+                "session_timeout": args.session_timeout_seconds,
+                "family_policy": args.address_family_policy,
+                "private_output": str(args.private_output.resolve()),
+            }
+            profile = approved_profile(
+                args.approval_file,
+                plan_data,
+                b,
+                args.provenance_file,
+                source_hash(),
+                controls,
+                catalog=CATALOG,
+            )
+            plan(args.model, profile.total_budget, args.price_profile)
+            try:
+                with LiveDeployment(
+                    profile,
+                    credential_fd=args.credential_fd,
+                    journal_volume=args.journal_volume,
+                    lease_seconds=args.dns_lease_seconds,
+                    refresh_seconds=args.dns_refresh_seconds,
+                    dns_timeout=args.dns_timeout_seconds,
+                    family_policy=args.address_family_policy,
+                ) as deployment:
+                    result = run_session(
+                        "none",
+                        args.case_directory.resolve().parent,
+                        task.case_id,
+                        extension=deployment,
+                        private_output=args.private_output,
+                        runtime=profile,
+                    )
+                    result["transport_failure"] = deployment.failure_code()
+                output = report(
+                    plan_data,
+                    "ANALYSIS_SUCCEEDED"
+                    if result["status"] == "LIVE_COMPLETED"
+                    else "ANALYSIS_FAILED",
+                    failure=result.get("transport_failure")
+                    or result.get("failure_type")
+                    or result.get("ledger_failure"),
+                    experiment=args.experiment_id,
+                )
+                output["analysis_success"] = result["status"] == "LIVE_COMPLETED"
+                output["live"] = "AUTHORIZED_SINGLE_CASE"
+                output["billing_status"] = "UNRECONCILED"
+                for k in ("tool_calls", "iterations"):
+                    output[k] = result.get(k)
+                if result.get("usage_status") == "CONFIRMED" and result.get("settled_usage"):
+                    usage = result["settled_usage"]
+                    output["input_tokens"] = usage["input_tokens"]
+                    output["output_tokens"] = usage["output_tokens"]
+                    output["token_cost_upper_usd"] = usage["cost_usd"]
+                print(json.dumps(output, sort_keys=True))
+                if not output["analysis_success"]:
+                    raise SystemExit(2)
+                return
+            except Exception:  # noqa: BLE001 - unknown execution/billing requires journal review
+                raise PilotError("MANUAL_REVIEW_REQUIRED") from None
         print(
             json.dumps(
                 report(plan_data, "DRY_RUN_VALIDATED", experiment=args.experiment_id),

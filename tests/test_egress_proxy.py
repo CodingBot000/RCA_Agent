@@ -179,3 +179,26 @@ def test_successful_proxy_request_is_spent_for_new_ids(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="spent"):
         proxy("count", envelope("count"))
     assert sent == ["count", "complete"] and proxy.ledger.summary()["cost_usd"] == "0.110"
+
+
+def test_proxy_error_and_count_bodies_cannot_reflect_credentials():
+    from rca_agent.egress_proxy import sanitize_upstream
+
+    raw = {
+        "error": {
+            "message": "private-api-credential-canary",
+            "api_key": "private-api-credential-canary",
+        }
+    }
+    assert "private-api-credential-canary" not in json.dumps(sanitize_upstream("count", 401, raw))
+    count = {
+        "object": "response.input_tokens",
+        "input_tokens": 10,
+        "diagnostic": "private-api-credential-canary",
+    }
+    assert sanitize_upstream("count", 200, count) == {
+        "object": "response.input_tokens",
+        "input_tokens": 10,
+    }
+    with pytest.raises(ValueError):
+        sanitize_upstream("count", 200, {"input_tokens": 10})

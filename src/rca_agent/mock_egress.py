@@ -119,11 +119,13 @@ print('firewall_applied')
 
 
 class MockEgress:
-    def __init__(self, fault="none"):
+    def __init__(self, fault="none", *, journal_volume=None):
         self.fault = fault
         self.prefix = "rca-proxy-" + uuid.uuid4().hex
         self.volume = self.prefix + "-channel"
         self.network = self.prefix + "-net"
+        self.journal_volume = journal_volume or self.prefix + "-journal"
+        self.own_journal = journal_volume is None
         self.names = []
         self.volumes = []
         self.networks = []
@@ -175,6 +177,36 @@ class MockEgress:
             "o=size=1m,uid=10005,gid=10002,mode=0750",
             self.volume,
         )
+        if self.own_journal:
+            self.volumes.append(self.journal_volume)
+            docker("volume", "create", self.journal_volume)
+        initializer = self.prefix + "-journal-init"
+        self.names.append(initializer)
+        docker(
+            "run",
+            "--name",
+            initializer,
+            "--pull=never",
+            "--network",
+            "none",
+            "--read-only",
+            "--user",
+            "0:10002",
+            "--cap-drop",
+            "ALL",
+            "--cap-add",
+            "CHOWN",
+            "--security-opt",
+            "no-new-privileges",
+            "--mount",
+            f"type=volume,src={self.journal_volume},dst=/journal",
+            "--log-driver",
+            "none",
+            image,
+            "python",
+            "-c",
+            "import os,stat;s=os.stat('/journal');\nif s.st_uid==0:\n os.chmod('/journal',0o700);os.chown('/journal',10005,10002)\nelse: assert s.st_uid==10005 and stat.S_IMODE(s.st_mode)==0o700",
+        )
         api_ips = []
         for role in ("api", "deny-api", "proxy"):
             name = self.prefix + "-" + role
@@ -211,6 +243,8 @@ class MockEgress:
                 ]
                 args += [
                     "--mount",
+                    f"type=volume,src={self.journal_volume},dst=/journal",
+                    "--mount",
                     f"type=volume,src={self.volume},dst=/proxychannel",
                     "--mount",
                     f"type=bind,src={trust},dst=/trust,readonly",
@@ -238,7 +272,7 @@ class MockEgress:
             mounts = {m["Destination"]: m for m in info["Mounts"]}
             if role == "proxy":
                 if (
-                    set(mounts) != {"/proxychannel", "/trust"}
+                    set(mounts) != {"/proxychannel", "/trust", "/journal"}
                     or mounts["/trust"]["RW"]
                     or mounts["/proxychannel"]["Name"] != self.volume
                 ):
@@ -265,7 +299,9 @@ class MockEgress:
                 raise ValueError("container start deadline exceeded")
             writer = FrameWriter(proc.stdin, MAXIMUM)
             if role != "proxy":
-                writer.write({"fault": self.fault}, 5)
+                writer.write(
+                    {"fault": self.fault, "signals": getattr(self, "signals", ["metrics"])}, 5
+                )
                 docker(
                     "exec",
                     name,
@@ -329,6 +365,7 @@ class MockEgress:
                     },
                     "pricing": {"input_per_token": "0.001", "output_per_token": "0.002"},
                     "model": "gpt-6-luna",
+                    "journal_path": "/journal/requests.sqlite",
                 }
                 writer.write(config, 5)
                 validate_ready(FrameReader(proc.stdout, MAXIMUM).read(10))
@@ -439,6 +476,7 @@ def scenario(fault):
             "REFUSAL",
             "USAGE_UNAVAILABLE",
             "TIMEOUT",
+            "RESPONSE_INVALID",
         }
         if error and (set(error) != {"code"} or error["code"] not in allowed_errors):
             raise ValueError("unsafe error audit")

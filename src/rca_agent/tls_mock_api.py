@@ -16,7 +16,7 @@ from rca_agent.integrated_worker import MockAPI
 
 def main():
     config = json.loads(sys.stdin.readline())
-    api = MockAPI(config["fault"], "/audit/api.json")
+    api = MockAPI(config["fault"], "/audit/api.json", config.get("signals"))
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_POST(self):

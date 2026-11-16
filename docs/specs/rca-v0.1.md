@@ -121,6 +121,8 @@ OpenAI Mock Provider는 동일한 PreparedRequest로 SDK 토큰 계산 요청과
 
 ## Phase 4B-3B-1 Docker 격리 계약
 
+Phase 4B-3D는 영속 journal의 SENT 상태를 실제 모델 side effect 전에 durable commit하고, 재시작 후 미완료 요청은 수동 확인 대상으로 차단한다. journal에는 원본 prompt·인증정보·Ground Truth를 저장하지 않고 digest·상태·검증된 사용량만 기록한다. DNS guardian은 승인 hostname의 IPv4/IPv6 집합을 lease 단위로 갱신하며, IP 하나를 영구 허용하지 않는다. kernel 시간 제한 규칙과 애플리케이션 lease 검사를 함께 사용하고, 갱신 실패·만료 시 기본 거부한다. 개발 사례는 evaluator-only 원본 source_case 집합과 대조하여 분리하고 task/metrics/logs/traces만 Agent에 제공한다. 모든 운영 값은 별도 제안 문서의 미승인 값이며 실제 API/키 사용은 이번 범위에서 금지한다.
+
 Phase 4B-3C는 기존 network-none Agent/Broker/Worker를 유지하고 Worker만 별도 인증 UDS로 Proxy에 요청한다. 로컬 TLS Mock API와 Proxy는 isolated internal 네트워크에 배치한다. Proxy netns의 OS 방화벽은 별도 단기 NET_ADMIN 초기화 프로세스로 설정하고 Proxy 런타임은 capability를 전부 제거한다. 허용된 Mock IP/포트 이외 IPv4/IPv6·DNS 연결을 실제 거부하는지 검사한다. 이것은 실제 OpenAI 목적지 allowlist 검증을 대신하지 않으며 LIVE_BLOCKED를 유지한다. Proxy만 TLS client/향후 API 자격 증명 경계를 소유하고 Worker의 URL·헤더를 그대로 전달하지 않는다. 실제 자격 증명이나 외부 API는 사용하지 않는다. 파일럿 CLI는 개발 split과 모든 한도·가격 프로필을 명시해야 하며 기본 dry-run, live는 항상 차단한다.
 
 통합 오프라인 실행은 Agent/Broker/Worker 모두 network none을 유지한다. Worker UID10001, Broker UID10002, 공유 GID10002의 UDS를 사용한다. 디렉터리는 Worker 소유 0750, 소켓은 0660이며 Broker에는 Volume을 읽기 전용으로 마운트한다. SO_PEERCRED와 소유권·inode·symlink 검사를 수행하고 세션별 HMAC 인증·요청 ID/순번·응답 인증을 추가한다. 인증값은 호스트가 익명 stdin으로만 전달하며 Agent·CLI·환경·Volume에 저장하지 않는다. 동일 요청 재전송은 세션 내 캐시하고 내용이 다른 ID 재사용은 거부한다. 외부 송신 기능은 구현하지 않고 LIVE_BLOCKED를 반환한다. 테스트용 예산은 운영 정책으로 간주하지 않는다.

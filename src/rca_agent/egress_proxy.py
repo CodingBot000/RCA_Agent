@@ -26,6 +26,7 @@ from rca_agent.model_broker import (
     Usage,
 )
 from rca_agent.openai_provider import QueryOutput
+from rca_agent.request_journal import RequestJournal
 from rca_agent.secure_uds import Credentials, serve
 
 MAX_RESPONSE = 262144
@@ -44,13 +45,18 @@ def validate_http(operation, data):
         raise ValueError("operation/path mismatch")
     body = data["body"]
     common = {"model", "instructions", "input", "tools", "text"}
-    allowed = common if operation == "count" else common | {"store", "max_output_tokens", "stream"}
+    allowed = (
+        common
+        if operation == "count"
+        else common | {"store", "max_output_tokens", "stream", "service_tier"}
+    )
     if (
         set(body) - allowed
         or not common <= set(body)
         or body["model"] not in ("gpt-6-luna", "gpt-6.1-terra")
         or body["instructions"] != MODEL_INSTRUCTION
         or body["tools"] != []
+        or body.get("service_tier", "default") != "default"
     ):
         raise ValueError("unapproved request body")
     if operation == "complete" and (
@@ -76,14 +82,51 @@ def validate_http(operation, data):
     return path
 
 
+def sanitize_upstream(operation, status, result):
+    if status >= 400:
+        return {"error": {"type": "upstream_http_error"}}
+    if operation == "count":
+        if (
+            result.get("object") != "response.input_tokens"
+            or type(result.get("input_tokens")) is not int
+            or not 0 <= result["input_tokens"] <= 922000
+        ):
+            raise ValueError("invalid count response")
+        return {"object": "response.input_tokens", "input_tokens": result["input_tokens"]}
+    if result.get("object") != "response" or not isinstance(result.get("output"), list):
+        raise ValueError("invalid model response")
+    allowed = {
+        "id",
+        "object",
+        "created_at",
+        "model",
+        "status",
+        "output",
+        "usage",
+        "incomplete_details",
+        "service_tier",
+    }
+    filtered = {k: v for k, v in result.items() if k in allowed}
+    # Refusal text is not an analysis result; never forward arbitrary provider diagnostics.
+    for item in filtered["output"]:
+        for part in item.get("content", []):
+            if part.get("type") == "refusal":
+                part["refusal"] = "provider_refusal"
+    return filtered
+
+
 class PinnedTLS(http.client.HTTPSConnection):
     def __init__(self, ip, port, context):
-        self.endpoint = (str(ipaddress.IPv4Address(ip)), port)
+        address = ipaddress.ip_address(ip)
+        if getattr(address, "ipv4_mapped", None):
+            raise ValueError("mapped IPv6 not allowed")
+        self.family = socket.AF_INET6 if address.version == 6 else socket.AF_INET
+        self.endpoint = (str(address), port, 0, 0) if address.version == 6 else (str(address), port)
         super().__init__("api.openai.com", 443, context=context, timeout=1)
 
     def connect(self):
         # No DNS lookup, URL-derived endpoint, environment proxy or CONNECT tunnel.
-        with_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        with_socket = socket.socket(self.family, socket.SOCK_STREAM)
         try:
             with_socket.settimeout(self.timeout)
             with_socket.connect(self.endpoint)
@@ -101,7 +144,7 @@ def binding(data):
         {
             k: v
             for k, v in data["body"].items()
-            if k not in ("store", "max_output_tokens", "stream")
+            if k not in ("store", "max_output_tokens", "stream", "service_tier")
         },
         sort_keys=True,
     )
@@ -120,27 +163,99 @@ class ProxyModelProvider:
         return self.proxy.counts[binding(request.payload())]
 
     def complete(self, request):
-        result = self.proxy.forward("complete", request.payload())
-        raw = result["body"].get("usage")
-        usage = None
-        if (
-            isinstance(raw, dict)
-            and all(
-                type(raw.get(k)) is int and raw[k] >= 0
-                for k in ("input_tokens", "output_tokens", "total_tokens")
+        journal = getattr(self.proxy, "journal", None)
+        digest = None
+        if journal is not None:
+            digest = journal.sent(
+                request,
+                self.proxy.request_ids[binding(request.payload())],
+                self.input_upper_bound(request),
             )
-            and raw["total_tokens"] == raw["input_tokens"] + raw["output_tokens"]
-        ):
-            usage = Usage(
-                raw["input_tokens"],
-                raw["output_tokens"],
-                self.proxy.pricing.cost(raw["input_tokens"], raw["output_tokens"]),
-            )
-        return ProviderResult(json.dumps(result), usage)
+        try:
+            if getattr(self.proxy, "journal_fault", None) == "journal_before_send":
+                os._exit(3)
+            result = self.proxy.forward("complete", request.payload())
+            if getattr(self.proxy, "journal_fault", None) == "journal_after_response":
+                os._exit(3)
+            raw = result["body"].get("usage")
+            usage = None
+            if (
+                isinstance(raw, dict)
+                and all(
+                    type(raw.get(k)) is int and raw[k] >= 0
+                    for k in ("input_tokens", "output_tokens", "total_tokens")
+                )
+                and raw["total_tokens"] == raw["input_tokens"] + raw["output_tokens"]
+            ):
+                usage = Usage(
+                    raw["input_tokens"],
+                    raw["output_tokens"],
+                    self.proxy.pricing.cost(raw["input_tokens"], raw["output_tokens"]),
+                )
+            if journal is not None:
+                if usage is None:
+                    journal.uncertain(digest)
+                else:
+                    journal.completed(
+                        digest,
+                        {
+                            "input_tokens": usage.input_tokens,
+                            "output_tokens": usage.output_tokens,
+                            "cost_usd": str(usage.cost_usd),
+                        },
+                        response_id=result["body"].get("id"),
+                    )
+            if result["body"].get("status") == "completed":
+                try:
+                    for item in result["body"].get("output", []):
+                        for part in item.get("content", []):
+                            if part.get("type") == "output_text":
+                                parse_frame(part["text"].encode(), MAX_RESPONSE)
+                except (ValueError, TypeError, UnicodeError):
+                    self.proxy.record_error("RESPONSE_INVALID")
+                    return ProviderResult(None, usage, "invalid_provider_response")
+            return ProviderResult(json.dumps(result), usage)
+        except BaseException:
+            if journal is not None and digest is not None:
+                journal.uncertain(digest)
+            raise
 
 
 class EgressProxy:
     def __init__(self, config):
+        self.ip, self.port, self.context = self.endpoint_context(config)
+        b = Budget(
+            **{**config["budget"], "max_cost_usd": Decimal(config["budget"]["max_cost_usd"])}
+        )
+        if b.max_retries != 0 or b.max_concurrency != 1:
+            raise ValueError("unsupported Proxy concurrency/retry")
+        self.pricing = Pricing(
+            Decimal(config["pricing"]["input_per_token"]),
+            Decimal(config["pricing"]["output_per_token"]),
+        )
+        self.forward_timeout = min(config.get("transport_timeout", 1.5), b.timeout_seconds)
+        self.ledger = OfflineBroker(
+            ProxyModelProvider(self),
+            provider_name="openai-egress" if config.get("mode") == "production" else "egress-mock",
+            model=config["model"],
+            code_version="production-tls" if config.get("mode") == "production" else "tls-proxy",
+            budget=b,
+            pricing=self.pricing,
+        )
+        self.journal = (
+            RequestJournal(config["journal_path"]) if config.get("journal_path") else None
+        )
+        self.journal_fault = config.get("fault")
+        self.request_ids = {}
+        self.counts = {}
+        self.spent = set()
+        self.count_calls = 0
+        self.blocked = False
+        self.calls = self.models = 0
+        self.path = Path("/proxychannel/audit.json")
+        self.path.write_text('{"http_calls":0,"model_calls":0}')
+
+    def endpoint_context(self, config):
         if (
             config.get("mode") != "offline-local-tls"
             or not ipaddress.ip_address(config["ip"]).is_private
@@ -153,31 +268,11 @@ class EgressProxy:
         self.context.load_verify_locations("/trust/ca.pem")
         if config.get("fault") == "tls_version":
             self.context.minimum_version = ssl.TLSVersion.TLSv1_3
-        b = Budget(
-            **{**config["budget"], "max_cost_usd": Decimal(config["budget"]["max_cost_usd"])}
-        )
-        if b.max_retries != 0 or b.max_concurrency != 1:
-            raise ValueError("unsupported Proxy concurrency/retry")
-        self.pricing = Pricing(
-            Decimal(config["pricing"]["input_per_token"]),
-            Decimal(config["pricing"]["output_per_token"]),
-        )
-        self.forward_timeout = min(1.5, b.timeout_seconds)
-        self.ledger = OfflineBroker(
-            ProxyModelProvider(self),
-            provider_name="egress-mock",
-            model=config["model"],
-            code_version="tls-proxy",
-            budget=b,
-            pricing=self.pricing,
-        )
-        self.counts = {}
-        self.spent = set()
-        self.count_calls = 0
-        self.blocked = False
-        self.calls = self.models = 0
-        self.path = Path("/proxychannel/audit.json")
-        self.path.write_text('{"http_calls":0,"model_calls":0}')
+        return self.ip, self.port, self.context
+
+    def handle_authenticated(self, body):
+        self.request_id = body["id"]
+        return self(body["operation"], body["data"])
 
     def record_error(self, code):
         Path("/proxychannel/error.json").write_text(json.dumps({"code": code}))
@@ -205,6 +300,8 @@ class EgressProxy:
                 return result
             if key not in self.counts:
                 raise ValueError("input count required")
+            if getattr(self, "journal", None) is not None:
+                self.request_ids[key] = self.request_id
             self.spent.add(
                 key
             )  # Consume before any model side effect, including uncertain failures.
@@ -216,6 +313,9 @@ class EgressProxy:
         except Exception:
             self.blocked = True
             raise
+
+    def request_headers(self):
+        return {"Content-Type": "application/json"}
 
     def forward(self, operation, data):
         path = validate_http(operation, data)
@@ -242,7 +342,7 @@ class EgressProxy:
         timer.start()
         try:
             encoded = json.dumps(data["body"], ensure_ascii=False, allow_nan=False).encode()
-            conn.request("POST", path, body=encoded, headers={"Content-Type": "application/json"})
+            conn.request("POST", path, body=encoded, headers=self.request_headers())
             # HTTP/1.0 may detach conn.sock while its response file still owns the FD.
             # An independent TCP descriptor lets the deadline interrupt that read too.
             control["socket"] = socket.socket(fileno=os.dup(conn.sock.fileno()))
@@ -274,6 +374,10 @@ class EgressProxy:
                 ):
                     self.record_error("REFUSAL")
                     self.blocked = True
+            result = sanitize_upstream(operation, response.status, result)
+            credential = getattr(self, "_credential", None)
+            if credential and credential in json.dumps(result):
+                raise ValueError("credential reflection refused")
             return {"status": response.status, "body": result}
         except ssl.SSLCertVerificationError as exc:
             self.record_error("TLS_HOSTNAME" if exc.verify_code == 62 else "TLS_CERTIFICATE")

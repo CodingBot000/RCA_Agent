@@ -35,10 +35,13 @@ print(json.dumps({'tls':results,'denials':checks,'http_requests':0,'keys_used':F
 """
 
 
-def run_probe(family_policy, lease_seconds, timeout):
+def run_probe(family_policy, lease_seconds, timeout, *, dns_timeout=None):
     if family_policy not in ("ipv4-only", "dual-stack") or not 2 * timeout < lease_seconds:
         raise ValueError("explicit safe probe limits required")
-    addresses = system_addresses(timeout)
+    dns_timeout = timeout if dns_timeout is None else dns_timeout
+    if not 0 < dns_timeout < lease_seconds:
+        raise ValueError("explicit DNS deadline required")
+    addresses = system_addresses(dns_timeout)
     if family_policy == "ipv4-only":
         addresses = tuple(a for a in addresses if ":" not in a)
     prefix = "rca-wan-" + uuid.uuid4().hex
@@ -169,9 +172,15 @@ def main():
     p.add_argument("--family-policy", choices=["ipv4-only", "dual-stack"], required=True)
     p.add_argument("--lease-seconds", type=int, required=True)
     p.add_argument("--timeout-seconds", type=float, required=True)
+    p.add_argument("--dns-timeout-seconds", type=float)
     args = p.parse_args()
     try:
-        result = run_probe(args.family_policy, args.lease_seconds, args.timeout_seconds)
+        result = run_probe(
+            args.family_policy,
+            args.lease_seconds,
+            args.timeout_seconds,
+            dns_timeout=args.dns_timeout_seconds,
+        )
     except Exception:  # noqa: BLE001 - no resolver or TLS exception detail disclosure
         print(
             json.dumps(

@@ -3,6 +3,8 @@
 import json
 import os
 import secrets
+import select
+import stat
 import subprocess
 import threading
 import time
@@ -21,10 +23,22 @@ IMAGE = "rca-egress:mock"
 def read_credential_fd(fd):
     if type(fd) is not int or fd < 3:
         raise ValueError("explicit credential FD >=3 required")
-    raw = os.read(fd, 4097)
-    if len(raw) > 4096:
-        raise ValueError("credential too large")
-    value = raw.decode("ascii").strip()
+    if not stat.S_ISFIFO(os.fstat(fd).st_mode):
+        raise ValueError("one-shot credential pipe required")
+    raw = bytearray()
+    deadline = time.monotonic() + 5
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
+            raise ValueError("credential pipe deadline")
+        chunk = os.read(fd, 4097 - len(raw))
+        if not chunk:
+            break
+        raw.extend(chunk)
+        if len(raw) > 4096:
+            raise ValueError("credential too large")
+    value = raw.decode("ascii")
+    raw[:] = b"\0" * len(raw)
     if not value or any(ord(c) < 33 or ord(c) > 126 for c in value):
         raise ValueError("invalid credential")
     return value
@@ -215,6 +229,35 @@ fd=os.open('/lease',os.O_RDONLY);os.fsync(fd);os.close(fd)
             "-c",
             "import os,stat;s=os.stat('/journal');\nif s.st_uid==0:\n os.chmod('/journal',0o700);os.chown('/journal',10005,10002)\nelse: assert s.st_uid==10005 and stat.S_IMODE(s.st_mode)==0o700",
         )
+        inspect_name = self.prefix + "-journal-check"
+        self.names.append(inspect_name)
+        if (
+            docker(
+                "run",
+                "--name",
+                inspect_name,
+                "--pull=never",
+                "--network",
+                "none",
+                "--read-only",
+                "--user",
+                "10005:10002",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--log-driver",
+                "none",
+                "--mount",
+                f"type=volume,src={self.journal_volume},dst=/journal,readonly",
+                self.image,
+                "python",
+                "-c",
+                "from rca_agent.request_journal import readonly_summary;assert not any(readonly_summary('/journal/requests.sqlite').values());print('journal_fresh')",
+            )
+            != "journal_fresh"
+        ):
+            raise ValueError("existing journal requires manual review before credential use")
         self.proxy = self.prefix + "-proxy"
         self.names.append(self.proxy)
         docker(

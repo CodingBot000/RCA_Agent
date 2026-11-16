@@ -550,8 +550,23 @@ print('wrong_uid_denied')
                                 "status": "ANALYSIS_FAILED",
                                 "failure_type": message["failure"],
                                 "live": "AUTHORIZED_RUN",
-                                "settled_usage": None,
-                                "usage_status": "UNAVAILABLE",
+                                "calls": unique,
+                                "settled_usage": {
+                                    k: last_metadata[k]
+                                    for k in (
+                                        "input_tokens",
+                                        "output_tokens",
+                                        "total_tokens",
+                                        "cost_usd",
+                                    )
+                                }
+                                if last_metadata is not None
+                                else None,
+                                "usage_status": "CONFIRMED"
+                                if last_metadata is not None
+                                else "UNAVAILABLE",
+                                "tool_calls": sum(counters.tool_calls.values()),
+                                "iterations": sum(counters.iterations.values()),
                             }
                             break
                         if (

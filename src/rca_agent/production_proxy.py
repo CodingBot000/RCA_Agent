@@ -35,6 +35,12 @@ def load_lease(path="/lease/current.json"):
 
 
 class ProductionProxy(EgressProxy):
+    def __init__(self, config):
+        super().__init__(config)
+        if any(self.journal.summary().values()):
+            self.journal.close()
+            raise ValueError("existing production attempt requires manual reconciliation")
+
     def endpoint_context(self, config):
         self.permit = LivePermit(**config["permit"])
         self.permit.require()

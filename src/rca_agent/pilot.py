@@ -345,6 +345,8 @@ def main():
                 output["analysis_success"] = result["status"] == "LIVE_COMPLETED"
                 output["live"] = "AUTHORIZED_SINGLE_CASE"
                 output["billing_status"] = "UNRECONCILED"
+                output["model_calls"] = result.get("calls")
+                output["signals_observed"] = result.get("signals_observed", [])
                 for k in ("tool_calls", "iterations"):
                     output[k] = result.get(k)
                 if result.get("usage_status") == "CONFIRMED" and result.get("settled_usage"):

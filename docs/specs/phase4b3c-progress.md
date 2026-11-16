@@ -83,3 +83,4 @@ Docker Desktop Engine 29.1.3 linux/arm64에서 실제 실행했다.
 - SDK 내부 스키마 헬퍼를 계속 사용하므로 lock/SDK 갱신 시 projection/schema와 TLS Mock 회귀를 다시 검증해야 한다. 실제 API 동작 차이·취소·청구·키 주입은 LIVE_BLOCKED 조건으로 유지한다.
 - 음성 시나리오의 HTTP 계수는 전송 시도다. TLS 실패의 count 시도 1회를 서버 수신/모델 실행 성공으로 해석하지 않는다. Remote cancel은 구현·검증하지 않았고 local shutdown 이후 미확인 상태의 재호출을 거부한다.
 - 임시 컨테이너·네트워크·Volume과 테스트 인증서/소켓을 제거했다. 최종 Docker 조회에서 해당 rca 리소스가 남지 않았다. 기존 macOS 실행기·격리 프로필 및 실제 키/비공개 데이터는 변경하지 않았다.
+- Git 대상 19개 파일에서 금지된 데이터/키/로그 경로 0건, API 키·토큰·PEM 개인키 패턴 0건을 확인했다. `.env`, phase1-data, development-data 및 pilot-private-results 제외 규칙을 확인했다. 패턴 검사는 보조 검사이며 OS·프로토콜 격리의 대체 수단이 아니다.

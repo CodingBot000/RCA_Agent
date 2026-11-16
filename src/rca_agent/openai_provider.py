@@ -89,6 +89,7 @@ class OpenAIProvider:
                 **common,
                 text_format=output_type,
                 store=False,
+                service_tier="default",
                 max_output_tokens=request.max_output_tokens,
             )
             raw_usage = raw.http_response.json().get("usage")

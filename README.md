@@ -165,3 +165,16 @@ uv run --locked --no-sync python -m rca_agent.pilot --help
 ```
 
 파일럿 CLI는 기본 dry-run으로 개발 manifest/평가셋 분리, 명시된 모든 한도와 가격 프로필을 검증한다. `--live`는 호출 없이 차단한다. 실제 유료 backend·자격 증명은 활성화하지 않았다. 보고서의 미실행 비용·정확도는 null이며 Fake 결과를 성능으로 표현하지 않는다. [3C 진행 기록](docs/specs/phase4b3c-progress.md)에 실제 Docker 근거, [공식 가격 확인](docs/specs/phase4b3c-pricing.md), 보고 schema 및 첫 개발용 1건의 기술적·사용자 결정 조건을 정리했다.
+
+
+## Phase 4B-3D 개발용 1건 Readiness
+
+영속 request journal과 원본 identity 기반 개발/평가 분리, 세 신호 telemetry 실행을 추가했다. DNS/IP 집합은 시간 제한 lease로 교체하고 Proxy netns에서 이전 주소와 만료된 주소를 차단한다. 실제 OpenAI에는 IPv4 DNS/TLS handshake만 검증했고 HTTP/API key를 사용하지 않았다. 현재 유료 실행은 LIVE_BLOCKED다.
+
+```sh
+uv run --locked --no-sync python -m rca_agent.journal_probe
+uv run --locked --no-sync python -m rca_agent.dns_rotation_probe
+uv run --locked --no-sync python -m rca_agent.pilot --help
+```
+
+`pilot`은 기본 dry-run이며 개발 manifest뿐 아니라 evaluator-only provenance를 검사할 수 있다. `--live`는 provenance·명시적 private approval·모든 운영 설정·credential FD가 있어야 환경을 준비하고, 실제 OS/TLS 검증 뒤에만 Proxy에 key를 전달한다. `.env` 자동 사용이나 API key 생성은 없다. 이 작업에서 승인 파일을 활성화하거나 유료 경로를 실행하지 않았다. [3D 기록](docs/specs/phase4b3d-progress.md)과 [미승인 운영 제안](docs/specs/phase4b3d-operator-proposal.md)에 근거·실행 절차·필요 결정을 정리했다. 실제 journal은 자동 삭제하지 않으며 불명확 요청은 수동 확인한다.

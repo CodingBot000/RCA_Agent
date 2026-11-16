@@ -7,8 +7,9 @@ import secrets
 import shutil
 import subprocess
 import tempfile
+import time
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from decimal import Decimal
 from pathlib import Path
 
@@ -106,6 +107,14 @@ def stage_blind(destination, source=None, case_id=None):
                 }
             )
         )
+    if source is not None:
+        for signal in ("logs", "traces"):
+            path = original / (signal + ".parquet")
+            if not path.exists():
+                continue
+            if path.is_symlink() or path.stat().st_nlink != 1:
+                raise ValueError("unsafe signal file")
+            shutil.copyfile(path, case / path.name)
     # Docker Desktop needs directories traversable by the non-root Agent only in this staging tree.
     destination.chmod(0o755)
     case.chmod(0o755)
@@ -174,7 +183,7 @@ def validate_ready(message):
         raise IPCError("invalid isolation status")
 
 
-def safe_failure(message, fault):
+def safe_failure(message, fault, *, max_calls=3):
     from rca_agent.public_report import SAFE_REASONS
 
     if (
@@ -183,7 +192,7 @@ def safe_failure(message, fault):
         or message["type"] != "error"
         or message["reason"] != "broker_failed"
         or type(message["calls"]) is not int
-        or not 0 <= message["calls"] <= 3
+        or not 0 <= message["calls"] <= max_calls
         or message["channel_failure"]
         not in {"", "socket_path", "peer_identity", "response_auth", "worker_result"}
         or message["ledger_failure"] not in SAFE_REASONS
@@ -228,7 +237,16 @@ def validate_audit(value):
         raise IPCError("invalid mock audit")
 
 
-def run_session(fault="none", blind_source=None, case_id=None, *, extension=None):
+def run_session(
+    fault="none",
+    blind_source=None,
+    case_id=None,
+    *,
+    extension=None,
+    all_signals=False,
+    private_output=None,
+    runtime=None,
+):
     if fault not in {
         "none",
         "count_failure",
@@ -245,6 +263,14 @@ def run_session(fault="none", blind_source=None, case_id=None, *, extension=None
         "uds_replay",
     }:
         raise ValueError("unknown fault")
+    if runtime is not None and fault != "none":
+        raise ValueError("faults forbidden in live execution")
+    if runtime is not None and (
+        extension is None or getattr(extension, "production", False) is not True
+    ):
+        raise ValueError("live runtime cannot use a Mock or missing deployment")
+    identity = runtime.identity if runtime is not None else IDENTITY
+    started = time.monotonic()
     prefix = "rca-e2e-" + uuid.uuid4().hex
     volume = prefix + "-channel"
     names = []
@@ -279,17 +305,26 @@ def run_session(fault="none", blind_source=None, case_id=None, *, extension=None
                 path = root / label
                 path.write_text("synthetic-only")
                 private.append(str(path))
-            b = fixture_budget(fault)
+            b = runtime.case_budget if runtime is not None else fixture_budget(fault)
+            if all_signals and runtime is None:
+                b = replace(b, max_calls=7, max_tool_calls=3, max_iterations=3)
+            total = runtime.total_budget if runtime is not None else b
             common = {
                 "case_id": case_id,
                 "case_budget": {**asdict(b), "max_cost_usd": str(b.max_cost_usd)},
-                "total_budget": {**asdict(b), "max_cost_usd": str(b.max_cost_usd)},
+                "total_budget": {**asdict(total), "max_cost_usd": str(total.max_cost_usd)},
                 "private_paths": private,
                 "fault": fault,
+                "all_signals": all_signals,
+                "signals": ["metrics", "logs", "traces"] if all_signals else ["metrics"],
+                "private_artifact": private_output is not None,
             }
+            if runtime is not None:
+                common.update(runtime.public_role_config())
             auth = {"session": secrets.token_hex(16), "key": secrets.token_hex(32)}
             if extension is not None:
-                extension.start(private, b)
+                extension.signals = common["signals"]
+                extension.start(private, total)
             endpoints = {}
             for role in ("worker", "broker", "agent"):
                 name = prefix + "-" + role
@@ -463,24 +498,109 @@ print('wrong_uid_denied')
                 1,
                 5,
                 b,
-                b,
+                total,
                 ObservationLimits(1, 4000),
                 Pricing(Decimal(".001"), Decimal(".002")),
             )
             counters = ExecutionCounters(cfg)
             unique = transmitted = 0
             last_metadata = None
-            for _ in range(8):
-                message = ar.read(10)
+            for _ in range(
+                (2 * total.max_calls + 3)
+                if runtime is not None
+                else (10 if (all_signals or private_output is not None) else 8)
+            ):
+                if runtime is not None and getattr(extension, "failed", False):
+                    raise IPCError("DNS guardian failed")
+                if runtime is not None and time.monotonic() - started > runtime.session_timeout:
+                    raise IPCError("session deadline")
+                timeout = (
+                    min(
+                        b.timeout_seconds + 5,
+                        runtime.session_timeout - (time.monotonic() - started),
+                    )
+                    if runtime is not None
+                    else 10
+                )
+                message = ar.read(timeout)
+                if message.get("type") == "artifact":
+                    if private_output is None or set(message) != {
+                        "type",
+                        "result",
+                        "history",
+                        "model_metadata",
+                        "failure",
+                    }:
+                        raise IPCError("unexpected private artifact")
+                    from rca_agent.private_artifact import write_artifact
+
+                    write_artifact(private_output, message)
+                    continue
                 if message.get("type") == "done":
+                    if runtime is not None:
+                        from rca_agent.public_report import SAFE_REASONS
+
+                        if message.get("success") is False:
+                            if (
+                                set(message) != {"type", "success", "failure"}
+                                or message["failure"] not in SAFE_REASONS
+                            ):
+                                raise IPCError("invalid failure envelope")
+                            result = {
+                                "status": "ANALYSIS_FAILED",
+                                "failure_type": message["failure"],
+                                "live": "AUTHORIZED_RUN",
+                                "settled_usage": None,
+                                "usage_status": "UNAVAILABLE",
+                            }
+                            break
+                        if (
+                            set(message)
+                            != {"type", "success", "calls", "replay_equal", "signals_observed"}
+                            or message["success"] is not True
+                            or type(message["calls"]) is not int
+                            or message["calls"] != unique
+                            or transmitted != unique
+                            or not isinstance(message["signals_observed"], list)
+                            or any(
+                                s not in ("metrics", "logs", "traces")
+                                for s in message["signals_observed"]
+                            )
+                        ):
+                            raise IPCError("invalid live result")
+                        result = {
+                            "status": "LIVE_COMPLETED",
+                            "live": "AUTHORIZED_RUN",
+                            "mode": "LIVE",
+                            "calls": unique,
+                            "settled_usage": {
+                                k: last_metadata[k]
+                                for k in (
+                                    "input_tokens",
+                                    "output_tokens",
+                                    "total_tokens",
+                                    "cost_usd",
+                                )
+                            },
+                            "usage_status": "CONFIRMED",
+                            "pricing": "conservative-token-upper-cost",
+                            "tool_calls": sum(counters.tool_calls.values()),
+                            "iterations": sum(counters.iterations.values()),
+                            "signals_observed": message["signals_observed"],
+                        }
+                        break
+
                     if (
-                        set(message) != {"type", "success", "replay_equal", "calls"}
+                        set(message)
+                        != {"type", "success", "replay_equal", "calls", "signals_observed"}
                         or message["success"] is not True
                         or message["replay_equal"] is not True
                         or type(message["calls"]) is not int
-                        or message["calls"] != 2
-                        or unique != 2
-                        or transmitted != 3
+                        or message["calls"] != (6 if all_signals else 2)
+                        or unique != (6 if all_signals else 2)
+                        or transmitted != (7 if all_signals else 3)
+                        or message["signals_observed"]
+                        != (["logs", "metrics", "traces"] if all_signals else ["metrics"])
                     ):
                         raise IPCError("graph or replay failed")
                     result = {
@@ -490,6 +610,7 @@ print('wrong_uid_denied')
                         "unique_requests": unique,
                         "transmissions": transmitted,
                         "roles_isolated": True,
+                        "signals_observed": message["signals_observed"],
                         "mode": "OFFLINE_MOCK",
                         "settled_usage": {
                             k: last_metadata[k]
@@ -508,11 +629,21 @@ print('wrong_uid_denied')
                 if previous is None:
                     counters.begin(message)
                 bw.write({"invalid": "frame"} if fault == "bad_ipc" else message, 5)
-                response = br.read(6)
+                response = br.read((b.timeout_seconds + 5) if runtime is not None else 6)
                 if response.get("type") == "error":
-                    result = safe_failure(response, fault)
+                    result = safe_failure(response, fault, max_calls=total.max_calls)
+                    if private_output is not None:
+                        from rca_agent.private_artifact import write_artifact
+
+                        write_artifact(
+                            private_output,
+                            {"type": "broker_failure", "request": message, "failure": result},
+                        )
+                    if runtime is not None:
+                        result["status"] = "ANALYSIS_FAILED"
+                        result["live"] = "AUTHORIZED_RUN"
                     break
-                validate_response(message, response, identity=IDENTITY)
+                validate_response(message, response, identity=identity)
                 last_metadata = response["metadata"]
                 if previous is not None and previous != response:
                     raise IPCError("replay mismatch")
@@ -520,11 +651,11 @@ print('wrong_uid_denied')
                     counters.response(message, response)
                     cache.store(message, response)
                     unique += 1
-                transmitted += 1  # noqa: SIM113 - terminal frames are not requests
+                transmitted += 1
                 aw.write(response, 5)
             if result is None:
                 raise IPCError("message limit")
-            if fault != "worker_stop":
+            if fault != "worker_stop" and runtime is None:
                 audit = json.loads(
                     docker(
                         "exec",
@@ -540,7 +671,10 @@ print('wrong_uid_denied')
                 if (
                     result["status"] == "PASS"
                     and fault in ("none", "uds_replay")
-                    and (audit["model_calls"] != 2 or audit["http_calls"] != 4)
+                    and (
+                        audit["model_calls"] != (6 if all_signals else 2)
+                        or audit["http_calls"] != (12 if all_signals else 4)
+                    )
                 ):
                     raise IPCError("mock/replay accounting failed")
                 if (
@@ -590,6 +724,8 @@ def main():
     parser.add_argument("--suite", action="store_true")
     parser.add_argument("--blind-source", type=Path)
     parser.add_argument("--case-id")
+    parser.add_argument("--all-signals", action="store_true")
+    parser.add_argument("--private-output", type=Path)
     args = parser.parse_args()
     try:
         if args.suite:
@@ -621,7 +757,13 @@ def main():
                 )
             )
             return
-        result = run_session(args.fault, args.blind_source, args.case_id)
+        result = run_session(
+            args.fault,
+            args.blind_source,
+            args.case_id,
+            all_signals=args.all_signals,
+            private_output=args.private_output,
+        )
     except Exception:  # noqa: BLE001 - CLI must not print telemetry or credential exception bodies
         print(
             json.dumps(

@@ -116,7 +116,12 @@ class AuthenticatedSession:
                 raise IPCError("invalid sequence or capacity")
             # Record failures too; no re-execution of uncertain outcomes.
             try:
-                result = self.handler(body["operation"], body["data"])
+                authenticated = getattr(self.handler, "handle_authenticated", None)
+                result = (
+                    authenticated(body)
+                    if callable(authenticated)
+                    else self.handler(body["operation"], body["data"])
+                )
             except Exception:  # noqa: BLE001 - never disclose authenticated payloads
                 result = {"channel_error": "worker_failure"}
             response = self.credentials.sign(

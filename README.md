@@ -128,3 +128,26 @@ UV_OFFLINE=1 uv run --locked pytest -q tests/test_ipc_runner.py tests/test_ipc_p
 ## Phase 4B-3A 오프라인 Provider 시험
 
 `OpenAIProvider`는 공식 SDK와 Mock HTTP transport로 Responses 요청과 사용량 집계를 시험한다. 실제 키를 읽지 않으며 일반 네트워크 transport를 거부한다. 실제 API 접근, 입력 토큰 상한의 보수성, 실모델 스키마 호환성 및 OS 네트워크·파일 격리는 검증되지 않았다. 이 구성은 운영용 Broker가 아니며 Phase 4B-3B의 격리 검증 없이 실데이터에 사용하지 않는다.
+
+Phase 4B-3B-1은 진행 중이다. `uv run --locked --no-sync python scripts/docker_agent_probe.py`는 로컬에 이미 존재하는 `python:3.12.13-slim` 이미지를 사용해 합성 Agent 컨테이너의 기초 접근 제한을 시험한다. Broker·Proxy 네트워크 격리와 IPC E2E는 아직 구현·검증되지 않았으며 실데이터나 실제 API에 사용할 수 없다. 세부 상태는 `docs/specs/phase4b3b1-progress.md`를 참조한다.
+
+Phase 4B-3B-1A의 Broker/Mock 검사는 `uv run --locked --no-sync python -m rca_agent.docker_probe`로 실행한다. 두 컨테이너의 internal 네트워크 통신 및 파일 미마운트를 검사하며, 접근 가능한 비허용 경로나 미검증 경로가 있으면 `BLOCKED`와 종료 코드 2를 반환한다. 로컬 Docker 실험에서 Mock 통신은 성공했지만 gateway와 비허용 포트 경로가 발견됐다. 세부 결과는 `docs/specs/phase4b3b1a-progress.md`에 기록했다. Docker 명령은 수동 실행하며 일반 회귀 테스트와 CI는 Docker 없이 오프라인으로 실행한다.
+
+Gateway 추가 검사는 `uv run --locked --no-sync python -m rca_agent.gateway_probe`로 실행한다. 실제 합성 수신 서비스에 대한 일반 internal 대조군과 isolated gateway 네트워크를 비교한다. 기존 Gateway 경로 차단과 Mock 통신을 확인했지만 비허용 포트 접근은 계속 BLOCKED다. 근거와 검증 한계는 `docs/specs/phase4b3b-gateway-progress.md`에 기록했다.
+
+Unix Socket 후속 검사는 `uv run --locked --no-sync python -m rca_agent.uds_probe`로 실행한다. Broker와 합성 Worker는 network none 상태에서 두 컨테이너만 공유하는 임시 Volume의 소켓으로 통신한다. Agent에는 Volume을 제공하지 않는다. 합성 UDS 통신·TCP 접속 실패·잘못된 메시지 거부를 검사하며 결과와 남은 인증 경계는 `docs/specs/phase4b3b-uds-progress.md`에 기록했다. 실제 외부 Worker와 전체 실모델 보안 검증은 포함하지 않는다.
+
+## Phase 4B-3B 통합 오프라인 실행
+
+현재 통합 실행은 실제 LangGraph/LLMReasoner, 사례별·전체 Budget, 입력 토큰 계산 Mock, 인증 UDS Worker 및 Mock HTTP 응답을 연결한다. Agent/Broker/Worker 모두 TCP 네트워크가 없고, Agent에는 승인된 한 사례만, Broker에는 읽기 전용 UDS Volume만 제공한다. 서로 다른 UID와 SO_PEERCRED, 세션 HMAC, 소켓 소유권/권한 및 재전송 캐시를 검증한다. 위의 단계별 Probe는 이 통합의 이전 실험 기록으로 유지한다.
+
+```sh
+# 명시적 수동 빌드: 잠금 파일의 Linux 의존성을 설치한다.
+uv run --locked --no-sync python scripts/build_offline_image.py
+# 정상 Synthetic RCA 흐름
+uv run --locked --no-sync python -m rca_agent.docker_integration
+# 인증·소켓 위장·예산·Worker 장애를 포함한 13개 오프라인 시나리오
+uv run --locked --no-sync python -m rca_agent.docker_integration --suite
+```
+
+이미지가 현재 코드와 다르면 재빌드를 요구한다. 공개 결과에는 계수와 고정 상태만 출력하며 사례 키·telemetry·인증값은 출력하지 않는다. 실행 후 컨테이너와 임시 Volume을 제거한다. 실제 모델/외부 Worker는 `LIVE_BLOCKED`이며 활성화할 수 없다. [통합 진행 기록](docs/specs/phase4b3b-progress.md)에 실행 근거, 역사적 Probe 결과, 남은 외부 네트워크/TLS 조건 및 별도 승인이 필요한 첫 유료 1건 파일럿 준비 절차를 정리했다. Fake 결과는 RCA 정확도 평가가 아니다.

@@ -222,7 +222,9 @@ def validate_model_payload(payload: dict) -> None:
             raise IPCError("unapproved observation arguments")
 
 
-def validate_response(request: dict, response: dict) -> None:
+def validate_response(
+    request: dict, response: dict, *, identity=("fake", "ipc-fixture", "ipc-test")
+) -> None:
     """Check response envelope, both budget summaries, schema and observed claims."""
     from pydantic import ValidationError
 
@@ -257,9 +259,7 @@ def validate_response(request: dict, response: dict) -> None:
                 "cost_usd",
                 "failure",
             }
-            or metadata["provider"] != "fake"
-            or metadata["model"] != "ipc-fixture"
-            or metadata["code_version"] != "ipc-test"
+            or (metadata["provider"], metadata["model"], metadata["code_version"]) != identity
             or metadata["failure"] != ""
         ):
             raise IPCError("invalid usage metadata")

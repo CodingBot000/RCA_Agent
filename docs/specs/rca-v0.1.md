@@ -144,3 +144,7 @@ Strict Structured Outputs는 모델 응답 형식의 일부만 강제한다. SDK
 ## v0.8 파일럿 사전점검 보완
 
 PR #16 이후 개발용 1건은 사용자 지정 모델/Budget/runtime으로 오프라인 재검증한다. 선택 설정은 `configs/pilot-preflight-v0.8.json`에 기록하며 활성 승인 파일과 구분한다. Proxy의 명시적 HTTP timeout은 소켓과 전체 요청 deadline에 동일하게 전달하고 생성자의 기본 timeout으로 축소하지 않는다. Broker·session 상위 deadline과 기존 미확인 사용량 차단은 유지한다. 원본 독립성·공식 사양·실행 절차·READY/BLOCKED는 `pilot-v08-preflight.md`에 기록한다. 실제 키·`--live`·유료 실행은 별도 승인 전 금지다.
+
+## v0.9 사용자 로컬 승인 실행기
+
+기존 승인 schema와 credential FD를 사용하는 host 실행기를 제공한다. main/clean/source/image/provenance·Budget을 검사하고 실제 사용자 터미널의 최종 동의 뒤에만 1시간 승인 파일을 생성한다. 비에코 실패 fallback을 허용하지 않고 bounded one-shot pipe로만 key를 전달한다. private attempt를 승인·HTTP 전에 durable 기록하며 이전 시도나 비어 있지 않은 운영 journal은 자동 재개하지 않는다. 로컬 status는 기존 journal을 read-only로만 검사한다. 실제 API 인증·모델 실행·청구의 검증은 사용자 최종 승인 후 개발 1건에 한정하며 평가 20건은 대상이 아니다. 상세 계약·검증·잔여 위험은 `pilot-v09-local-launcher.md`를 따른다.

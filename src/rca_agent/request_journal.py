@@ -17,6 +17,40 @@ class JournalBlocked(ValueError):
     pass
 
 
+def readonly_summary(path):
+    """Inspect a trusted journal without creating it or converting recovery states."""
+    path = Path(path)
+    directory = os.lstat(path.parent)
+    if (
+        not stat.S_ISDIR(directory.st_mode)
+        or directory.st_uid != os.getuid()
+        or stat.S_IMODE(directory.st_mode) != 0o700
+    ):
+        raise JournalBlocked("unsafe journal directory")
+    if not os.path.lexists(path):
+        return {"completed": 0, "manual_review": 0, "sent": 0}
+    info = os.lstat(path)
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.getuid()
+        or stat.S_IMODE(info.st_mode) != 0o600
+        or info.st_nlink != 1
+    ):
+        raise JournalBlocked("unsafe journal file")
+    db = sqlite3.connect(path.absolute().as_uri() + "?mode=ro", uri=True, timeout=1)
+    try:
+        counts = dict(db.execute("SELECT state,COUNT(*) FROM requests GROUP BY state"))
+        if set(counts) - {"COMPLETED", "MANUAL_REVIEW", "SENT"}:
+            raise JournalBlocked("unknown journal state")
+        return {
+            "completed": counts.get("COMPLETED", 0),
+            "manual_review": counts.get("MANUAL_REVIEW", 0),
+            "sent": counts.get("SENT", 0),
+        }
+    finally:
+        db.close()
+
+
 def fingerprint(prepared):
     return hashlib.sha256(
         json.dumps(asdict(prepared), sort_keys=True, allow_nan=False).encode()

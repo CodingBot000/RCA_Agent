@@ -180,3 +180,9 @@ uv run --locked --no-sync python -m rca_agent.pilot --help
 `pilot`은 기본 dry-run이며 개발 manifest뿐 아니라 evaluator-only provenance를 검사할 수 있다. `--live`는 provenance·명시적 private approval·모든 운영 설정·credential FD가 있어야 환경을 준비하고, 실제 OS/TLS 검증 뒤에만 Proxy에 key를 전달한다. `.env` 자동 사용이나 API key 생성은 없다. 이 작업에서 승인 파일을 활성화하거나 유료 경로를 실행하지 않았다. [3D 기록](docs/specs/phase4b3d-progress.md)과 [미승인 운영 제안](docs/specs/phase4b3d-operator-proposal.md)에 근거·실행 절차·필요 결정을 정리했다. 실제 journal은 자동 삭제하지 않으며 불명확 요청은 수동 확인한다.
 
 v0.8 최종 사전점검은 [선택 설정](configs/pilot-preflight-v0.8.json)과 [READY/BLOCKED 기록·승인/FD 준비 절차](docs/specs/pilot-v08-preflight.md)를 따른다. 설정 선택은 유료 실행 승인이 아니며 API key·활성 승인 파일·`--live` 없이 검증한다.
+
+## v0.9 사용자 직접 실행
+
+기본 `python -m rca_agent.local_pilot`은 키 없는 점검이다. `.venv/bin/python -m rca_agent.local_pilot --run`은 사용자가 Codex 밖의 독립 로컬 터미널에서만 실행한다. 전송·보존·예산·미검증 API/청구 조건을 읽고 최종 문구를 입력한 뒤 비에코 key 입력을 진행한다. 승인 전에는 API 요청이 없고, 실제 키는 일회용 pipe FD로 Proxy에만 전달한다. [실행 절차·검증·잔여 위험](docs/specs/pilot-v09-local-launcher.md)을 먼저 확인한다.
+
+실패/중단 후 명령을 반복하거나 private attempt/journal을 지워 새 요청으로 우회하지 않는다. `python -m rca_agent.local_pilot --status`로 동일 journal의 집계만 읽고 수동 확인한다. 이번 구현 작업에서는 실제 키·운영 승인·유료 요청을 사용하지 않았고 LIVE_BLOCKED를 유지했다.

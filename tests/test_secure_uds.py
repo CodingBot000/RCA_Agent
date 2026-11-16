@@ -146,7 +146,8 @@ def test_socket_replacement_between_stat_and_connect_is_rejected(monkeypatch):
     assert client.blocked and not calls
 
 
-def test_normal_null_error_response_is_not_failure(monkeypatch):
+@pytest.mark.parametrize("provider_error", [None, "provider_error"])
+def test_normal_null_error_response_is_not_failure(monkeypatch, provider_error):
     from rca_agent import secure_uds
     from rca_agent.ipc_protocol import encode_frame, parse_frame
 
@@ -175,7 +176,7 @@ def test_normal_null_error_response_is_not_failure(monkeypatch):
                         "session": credentials.session,
                         "id": request["id"],
                         "sequence": request["sequence"],
-                        "result": {"content": "{}", "error": None},
+                        "result": {"content": "{}", "error": provider_error},
                     },
                     "response",
                 ),
@@ -191,7 +192,7 @@ def test_normal_null_error_response_is_not_failure(monkeypatch):
 
     monkeypatch.setattr(secure_uds.socket, "socket", lambda *args: Connection())
     client = secure_uds.ChannelClient("/channel/worker.sock", credentials)
-    assert client.request("complete", {})["error"] is None and not client.blocked
+    assert client.request("complete", {})["error"] == provider_error and not client.blocked
 
 
 def test_slow_frame_uses_absolute_deadline(monkeypatch):

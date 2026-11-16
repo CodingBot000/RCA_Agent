@@ -323,7 +323,9 @@ class EgressProxy:
         self.models += int(operation == "complete")
         self.path.write_text(json.dumps({"http_calls": self.calls, "model_calls": self.models}))
         conn = PinnedTLS(self.ip, self.port, self.context)
-        conn.timeout = min(conn.timeout, self.forward_timeout)
+        # The constructor's bootstrap default is not the approved HTTP timeout.
+        # The timer below still bounds the entire connect/TLS/request/response operation.
+        conn.timeout = self.forward_timeout
         expired = threading.Event()
         control = {"socket": None}
 

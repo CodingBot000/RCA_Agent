@@ -140,3 +140,7 @@ Phase 4B-3B-1A는 Broker와 합성 Mock 서버를 하나의 Docker internal 네�
 공식 SDK와 주입된 HTTP transport로 Responses 요청을 구성하며 자동 재시도를 끈다. 오프라인 시험만 허용하고 실제 Broker 연결은 구현하지 않는다. 요청은 고정 HTTPS API 호스트와 Responses 경로만 사용하고 리디렉션과 환경 프록시를 거부한다. 이는 코드 수준 검증이며 OS 네트워크 격리가 아니다. API 키는 테스트에서 합성 값만 사용한다.
 
 Strict Structured Outputs는 모델 응답 형식의 일부만 강제한다. SDK가 생성한 스키마를 사용하며 기존 Pydantic 및 IPC 검증을 추가로 적용한다. 스키마의 API 지원 여부는 별도로 검증해야 한다. 요청 실패 또는 사용량 누락은 비용이 불명확하므로 재시도 없이 차단한다. 완료 응답이라도 거부·불완전 응답과 잘못된 사용량은 실패한다. 입력 토큰의 보수적 상한과 가격은 호출자가 명시해야 하며 운영 승인 값으로 간주하지 않는다. 입력 추정의 정확성, 실제 요금과 네트워크·파일 권한 격리는 4B-3B의 진입 조건이다.
+
+## v0.8 파일럿 사전점검 보완
+
+PR #16 이후 개발용 1건은 사용자 지정 모델/Budget/runtime으로 오프라인 재검증한다. 선택 설정은 `configs/pilot-preflight-v0.8.json`에 기록하며 활성 승인 파일과 구분한다. Proxy의 명시적 HTTP timeout은 소켓과 전체 요청 deadline에 동일하게 전달하고 생성자의 기본 timeout으로 축소하지 않는다. Broker·session 상위 deadline과 기존 미확인 사용량 차단은 유지한다. 원본 독립성·공식 사양·실행 절차·READY/BLOCKED는 `pilot-v08-preflight.md`에 기록한다. 실제 키·`--live`·유료 실행은 별도 승인 전 금지다.

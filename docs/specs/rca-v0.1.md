@@ -148,3 +148,7 @@ PR #16 이후 개발용 1건은 사용자 지정 모델/Budget/runtime으로 오
 ## v0.9 사용자 로컬 승인 실행기
 
 기존 승인 schema와 credential FD를 사용하는 host 실행기를 제공한다. main/clean/source/image/provenance·Budget을 검사하고 실제 사용자 터미널의 최종 동의 뒤에만 1시간 승인 파일을 생성한다. 사용자 후속 결정에 따라 키는 승인 후 owner-only 저장소 `.env`에서 읽고 bounded one-shot pipe로만 전달한다. 키 재입력·dotenv 셸 실행·프로세스 환경변수 등록은 하지 않는다. private attempt를 승인·HTTP 전에 durable 기록하며 이전 시도나 비어 있지 않은 운영 journal은 자동 재개하지 않는다. 로컬 status는 기존 journal을 read-only로만 검사한다. 실제 API 인증·모델 실행·청구의 검증은 사용자 최종 승인 후 개발 1건에 한정하며 평가 20건은 대상이 아니다. 상세 계약·검증·잔여 위험은 `pilot-v09-local-launcher.md`와 `pilot-dotenv-key.md`를 따른다.
+
+## Journal 조사와 복구 경계
+
+별도 host 진단기는 owner-only 기존 기록·Git 소스·image 식별자 binding 및 local Unix Docker context/volume을 읽기 전용으로 대조한다. 실제 키·API를 사용하지 않고 기존 기록·volume·청구 상태를 변경하지 않는다. 누락 volume을 mount해 생성하지 않으며 읽은 journal의 SENT 상태도 변환하지 않는다. 충분한 pre-dispatch 근거는 수동 복구 계획의 조건일 뿐 실제 복구나 유료 실행 승인이 아니다. 별도 사용자 승인과 감사 기록 없이 attempt 삭제/초기화·새 journal 우회·청구 정산을 허용하지 않는다. 상세 근거와 수동 절차 설계는 `pilot-journal-investigation.md`를 따른다.
